@@ -13,19 +13,25 @@
         :root {
             --app-height: 100dvh;
         }
-        body {
+        html, body {
+            height: 100%;
+            height: var(--app-height);
             margin: 0;
             padding: 0;
+            overflow: hidden;
             background-color: #f3f4f6;
-            height: var(--app-height);
+        }
+        body {
             width: 100%;
             display: flex;
             flex-direction: column;
         }
         #root {
-            height: 100%;
+            flex: 1;
             display: flex;
             flex-direction: column;
+            height: 100%;
+            overflow: hidden;
         }
         .camera-overlay {
             position: absolute;
@@ -40,10 +46,14 @@
             border-radius: 4px;
         }
         .safe-pb {
-            padding-bottom: max(env(safe-area-inset-bottom), 12px);
+            padding-bottom: env(safe-area-inset-bottom);
         }
         #reader video {
             object-fit: cover !important;
+        }
+        .flex-1 {
+            flex: 1 1 auto;
+            min-height: 0;
         }
     </style>
 </head>
