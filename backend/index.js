@@ -210,26 +210,38 @@ app.post('/api/photos/export', (req, res) => {
         
         console.log(`Exporting ${rows.length} photos...`);
         let successCount = 0;
+rows.forEach(row => {
+    // Function to sanitize string for filename
+    const sanitize = (s) => (s || 'Unknown').replace(/[^a-z0-9]/gi, '-').replace(/-+/g, '-');
 
-        rows.forEach(row => {
-            const adv = (row.adv_name || 'Unassigned').replace(/\s+/g, '-');
-            const bld = (row.bld_name || 'Unknown').replace(/\s+/g, '-');
-            const time = row.timestamp.replace(/[:T]/g, '-').split('.')[0];
-            // Added ID to filename to ensure uniqueness
-            const newFileName = `${adv}_${bld}_${time}_ID${row.id}.jpg`;
-            
-            const relativeUrl = row.url.replace(/^\//, '');
-            const sourcePath = path.join(__dirname, relativeUrl);
-            const destPath = path.join(exportDir, newFileName);
-            
-            if (fs.existsSync(sourcePath)) {
-                fs.copyFileSync(sourcePath, destPath);
-                successCount++;
-                console.log(`[SUCCESS] ${row.id} synced as ${newFileName}`);
-            } else {
-                console.warn(`[FAILED] ${row.id} source file not found at ${sourcePath}`);
-            }
-        });
+    const adv = sanitize(row.adv_name || 'Unassigned');
+    const bld = sanitize(row.bld_name || 'Unknown');
+
+    // Safe Date Formatting for Filename (YYYYMMDD-HHMMSS)
+    let timeStr = 'Time-Unknown';
+    try {
+        const d = new Date(row.timestamp);
+        if (!isNaN(d.getTime())) {
+            timeStr = d.toISOString().replace(/T/, '_').replace(/:/g, '').split('.')[0];
+        }
+    } catch (e) {}
+
+    const newFileName = `${adv}_${bld}_${timeStr}_ID${row.id}.jpg`;
+
+    const relativeUrl = row.url.replace(/^\//, '');
+    const sourcePath = path.join(__dirname, relativeUrl);
+    const destPath = path.join(exportDir, newFileName);
+
+    console.log(`[SYNC] Original: ${row.url} -> New: ${newFileName}`);
+
+    if (fs.existsSync(sourcePath)) {
+        fs.copyFileSync(sourcePath, destPath);
+        successCount++;
+    } else {
+        console.warn(`[MISSING] No source file for ID ${row.id} at ${sourcePath}`);
+    }
+});
+
 
         res.json({ 
             success: true, 
