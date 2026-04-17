@@ -1,0 +1,7 @@
+node_modules/
+.DS_Store
+backend/uploads/*
+!backend/uploads/.gitkeep
+backend/key.pem
+backend/cert.pem
+backend/tmn_pop.db

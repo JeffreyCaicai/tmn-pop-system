@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TMN CommandCenter</title>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-100 font-sans">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        const App = () => {
+            const [stats, setStats] = useState({ total_screens: 0, completed_photos: 0 });
+            const [photos, setPhotos] = useState([]);
+            const [loading, setLoading] = useState(true);
+
+            useEffect(() => {
+                fetchData();
+                const interval = setInterval(fetchData, 5000); // Poll every 5s
+                return () => clearInterval(interval);
+            }, []);
+
+            const fetchData = async () => {
+                try {
+                    const statsRes = await fetch('http://localhost:3001/api/dashboard/stats');
+                    const statsData = await statsRes.json();
+                    setStats(statsData);
+
+                    const photosRes = await fetch('http://localhost:3001/api/dashboard/photos');
+                    const photosData = await photosRes.json();
+                    setPhotos(photosData);
+                    setLoading(false);
+                } catch (err) {
+                    console.error("Fetch error:", err);
+                }
+            };
+
+            const completionRate = stats.total_screens > 0 ? (stats.completed_photos / stats.total_screens * 100).toFixed(1) : 0;
+
+            return (
+                <div className="min-h-screen flex flex-col">
+                    <header className="bg-slate-900 text-white p-6 shadow-xl flex justify-between items-center">
+                        <div>
+                            <h1 className="text-2xl font-black tracking-tight text-red-500">TMN COMMAND CENTER</h1>
+                            <p className="text-slate-400 text-sm">Real-time PoP Verification Pipeline</p>
+                        </div>
+                        <div className="flex space-x-8">
+                            <div className="text-right">
+                                <p className="text-xs text-slate-500 uppercase font-bold">Weekend Progress</p>
+                                <p className="text-2xl font-mono text-green-400">{completionRate}%</p>
+                            </div>
+                            <div className="text-right border-l border-slate-700 pl-8">
+                                <p className="text-xs text-slate-500 uppercase font-bold">Active Operators</p>
+                                <p className="text-2xl font-mono text-blue-400">45</p>
+                            </div>
+                        </div>
+                    </header>
+
+                    <main className="flex-1 p-8 overflow-y-auto">
+                        {/* Summary Cards */}
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10">
+                            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                                <p className="text-slate-400 text-xs font-bold uppercase mb-1">Total Screens</p>
+                                <p className="text-3xl font-black text-slate-800">{stats.total_screens}</p>
+                            </div>
+                            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                                <p className="text-slate-400 text-xs font-bold uppercase mb-1">PoP Captured</p>
+                                <p className="text-3xl font-black text-green-600">{stats.completed_photos}</p>
+                            </div>
+                            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                                <p className="text-slate-400 text-xs font-bold uppercase mb-1">Remaining</p>
+                                <p className="text-3xl font-black text-orange-500">{stats.total_screens - stats.completed_photos}</p>
+                            </div>
+                            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 bg-red-50 border-red-100">
+                                <p className="text-red-400 text-xs font-bold uppercase mb-1">Flagged Errors</p>
+                                <p className="text-3xl font-black text-red-600">0</p>
+                            </div>
+                        </div>
+
+                        {/* Photo Feed */}
+                        <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center">
+                            <span className="w-3 h-3 bg-green-500 rounded-full mr-2 animate-pulse"></span>
+                            Live Monitoring Feed
+                        </h2>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                            {photos.length === 0 ? (
+                                <div className="col-span-full py-20 text-center text-slate-400">
+                                    No PoP photos captured yet. Waiting for operator uploads...
+                                </div>
+                            ) : (
+                                photos.map(photo => (
+                                    <div key={photo.id} className="bg-white rounded-2xl overflow-hidden shadow-sm border border-slate-100 hover:shadow-lg transition-shadow group">
+                                        <div className="relative aspect-video bg-slate-200">
+                                            <img 
+                                                src={`http://localhost:3001${photo.url}`} 
+                                                className="w-full h-full object-cover"
+                                            />
+                                            <div className="absolute top-2 right-2 flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                <button className="bg-white/90 p-1 rounded-md text-green-600 shadow-sm"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg></button>
+                                                <button className="bg-white/90 p-1 rounded-md text-red-600 shadow-sm"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
+                                            </div>
+                                            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-3">
+                                                <p className="text-white text-[10px] font-mono leading-tight">
+                                                    GPS: {photo.lat.toFixed(4)}, {photo.lng.toFixed(4)}<br/>
+                                                    TS: {new Date(photo.timestamp).toLocaleString()}
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <div className="p-4">
+                                            <div className="flex justify-between items-start mb-2">
+                                                <h3 className="font-bold text-slate-800 leading-tight">{photo.building_name}</h3>
+                                                <span className="bg-slate-100 text-slate-600 text-[10px] px-2 py-0.5 rounded font-mono font-bold uppercase tracking-widest">{photo.qr_code}</span>
+                                            </div>
+                                            <div className="flex items-center text-xs text-slate-500">
+                                                <div className="w-5 h-5 bg-slate-200 rounded-full flex items-center justify-center mr-2 text-[10px] font-bold">B</div>
+                                                <span>Operator: <strong>{photo.operator_name}</strong></span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    </main>
+
+                    <footer className="bg-white border-t p-4 text-center text-slate-400 text-xs">
+                        &copy; 2026 TMN Focus Media Indonesia - Automation Platform V1.0-PROTOTYPE
+                    </footer>
+                </div>
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
