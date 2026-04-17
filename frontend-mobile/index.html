@@ -2,62 +2,34 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>TMN Ops App</title>
-    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js" crossorigin></script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/html5-qrcode"></script>
+    <script src="https://unpkg.com/html5-qrcode" crossorigin></script>
     <style>
-        :root {
-            --app-height: 100dvh;
-        }
+        :root { --app-height: 100dvh; }
         html, body {
-            height: 100%;
-            height: var(--app-height);
-            margin: 0;
-            padding: 0;
-            overflow: hidden;
-            background-color: #f3f4f6;
+            height: 100%; height: var(--app-height);
+            margin: 0; padding: 0; overflow: hidden;
+            background-color: #f8fafc;
+            -webkit-tap-highlight-color: transparent;
         }
-        body {
-            width: 100%;
-            display: flex;
-            flex-direction: column;
-        }
-        #root {
-            flex: 1;
-            display: flex;
-            flex-direction: column;
-            height: 100%;
-            overflow: hidden;
-        }
+        #root { height: 100%; display: flex; flex-direction: column; }
+        .safe-pb { padding-bottom: env(safe-area-inset-bottom); }
         .camera-overlay {
-            position: absolute;
-            bottom: 10px;
-            left: 10px;
-            color: white;
-            text-shadow: 1px 1px 2px rgba(0,0,0,0.8);
-            font-size: 10px;
-            pointer-events: none;
-            background: rgba(0,0,0,0.3);
-            padding: 5px;
-            border-radius: 4px;
+            position: absolute; bottom: 15px; left: 15px;
+            color: white; font-size: 10px; pointer-events: none;
+            background: rgba(0,0,0,0.5); padding: 8px; border-radius: 8px;
+            backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.1);
         }
-        .safe-pb {
-            padding-bottom: env(safe-area-inset-bottom);
-        }
-        #reader video {
-            object-fit: cover !important;
-        }
-        .flex-1 {
-            flex: 1 1 auto;
-            min-height: 0;
-        }
+        #reader video { object-fit: cover !important; }
+        .flex-1 { flex: 1 1 auto; min-height: 0; }
     </style>
 </head>
-<body class="font-sans">
+<body class="font-sans antialiased text-slate-900">
     <div id="root"></div>
 
     <script type="text/babel">
@@ -71,7 +43,92 @@
             const [location, setLocation] = useState(null);
             const [loading, setLoading] = useState(false);
             const [history, setHistory] = useState([]);
+            const [advertisers, setAdvertisers] = useState([]);
+            
             const scannerRef = useRef(null);
+            const streamRef = useRef(null);
+
+            const safeUpper = (str) => (str ? String(str).toUpperCase() : 'N/A');
+
+            const formatTime = (ts) => {
+                if (!ts) return '--:--';
+                try {
+                    const dateStr = String(ts).replace(/-/g, '/').replace('T', ' ').split('.')[0];
+                    const d = new Date(dateStr);
+                    if (isNaN(d.getTime())) return '--:--';
+                    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+                } catch (e) { return '--:--'; }
+            };
+
+            const stopAllMedia = async () => {
+                if (scannerRef.current) {
+                    try { await scannerRef.current.stop(); } catch(e) {}
+                    scannerRef.current = null;
+                }
+                if (streamRef.current) {
+                    streamRef.current.getTracks().forEach(track => track.stop());
+                    streamRef.current = null;
+                }
+            };
+
+            const fetchAdvertisers = async () => {
+                try {
+                    const res = await fetch(`${window.location.origin}/api/advertisers`);
+                    const data = await res.json();
+                    setAdvertisers(Array.isArray(data) ? data : []);
+                } catch (err) { setAdvertisers([]); }
+            };
+
+            const fetchHistory = async () => {
+                try {
+                    const res = await fetch(`${window.location.origin}/api/dashboard/photos`);
+                    const data = await res.json();
+                    setHistory(Array.isArray(data) ? data : []);
+                } catch (err) { setHistory([]); }
+            };
+
+            const updatePhotoAdvertiser = async (photoId, advertiserId) => {
+                if (!advertiserId) return;
+                try {
+                    await fetch(`${window.location.origin}/api/photos/update-advertiser`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ photo_id: photoId, advertiser_id: advertiserId })
+                    });
+                    fetchHistory(); 
+                } catch (err) { console.error(err); }
+            };
+
+            useEffect(() => {
+                fetchAdvertisers();
+                fetchHistory();
+                return () => { stopAllMedia(); };
+            }, []);
+
+            useEffect(() => {
+                const initView = async () => {
+                    await stopAllMedia();
+                    if (activeTab === 'tasks') {
+                        if (view === 'scan') startScanner();
+                        if (view === 'capture') {
+                            try {
+                                const stream = await navigator.mediaDevices.getUserMedia({ 
+                                    video: { facingMode: 'environment', width: { ideal: 1280 } } 
+                                });
+                                streamRef.current = stream;
+                                const video = document.getElementById('video');
+                                if (video) video.srcObject = stream;
+                            } catch (err) {
+                                alert("Camera needed");
+                                setView('scan');
+                            }
+                        }
+                    } else {
+                        fetchHistory();
+                    }
+                };
+                initView();
+            }, [view, activeTab]);
 
             const startScanner = () => {
                 const html5QrCode = new Html5Qrcode("reader");
@@ -79,241 +136,165 @@
                 html5QrCode.start(
                     { facingMode: "environment" },
                     { fps: 10, qrbox: { width: 250, height: 250 } },
-                    (decodedText) => {
-                        handleScanSuccess(decodedText);
-                    },
-                    (errorMessage) => {
-                        // ignore error
-                    }
+                    (decodedText) => { handleScanSuccess(decodedText); },
+                    () => {}
                 ).catch(err => console.error(err));
             };
 
             const handleScanSuccess = async (decodedText) => {
-                if (scannerRef.current) {
-                    await scannerRef.current.stop();
-                }
+                await stopAllMedia();
                 setLoading(true);
                 try {
                     const res = await fetch(`${window.location.origin}/api/screens/${decodedText}`);
                     const data = await res.json();
                     if (data.error) throw new Error(data.error);
                     setScreenData(data);
-                    
-                    // Get location
                     navigator.geolocation.getCurrentPosition((pos) => {
                         setLocation({ lat: pos.coords.latitude, lng: pos.coords.longitude });
                         setView('capture');
                         setLoading(false);
-                    }, (err) => {
-                        alert("Location access required for PoP");
+                    }, () => {
+                        alert("GPS needed");
+                        setLocation({ lat: 0, lng: 0 });
+                        setView('capture');
                         setLoading(false);
                     });
                 } catch (err) {
-                    alert("Invalid QR Code: " + err.message);
+                    alert("Invalid QR Code");
                     setLoading(false);
-                    startScanner();
+                    setView('scan');
                 }
             };
 
             const takePhoto = () => {
                 const video = document.getElementById('video');
+                if (!video) return;
                 const canvas = document.createElement('canvas');
                 canvas.width = video.videoWidth;
                 canvas.height = video.videoHeight;
                 const ctx = canvas.getContext('2d');
                 ctx.drawImage(video, 0, 0);
-
-                // Add Watermark
                 ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
                 ctx.fillRect(0, canvas.height - 100, canvas.width, 100);
                 ctx.fillStyle = "white";
                 ctx.font = "24px Arial";
-                const timestamp = new Date().toLocaleString();
-                ctx.fillText(`TMN POP - ${screenData.building_name}`, 20, canvas.height - 70);
-                ctx.fillText(`Screen: ${screenData.id} | ${timestamp}`, 20, canvas.height - 40);
-                ctx.fillText(`GPS: ${location.lat.toFixed(4)}, ${location.lng.toFixed(4)} | OP: Budi`, 20, canvas.height - 10);
-
-                setPhoto(canvas.toDataURL('image/jpeg'));
+                const ts = new Date().toLocaleString();
+                ctx.fillText(`TMN POP - ${screenData?.building_name || 'N/A'}`, 20, canvas.height - 70);
+                ctx.fillText(`Screen: ${screenData?.id || '---'} | ${ts}`, 20, canvas.height - 40);
+                setPhoto(canvas.toDataURL('image/jpeg', 0.8));
+                stopAllMedia();
                 setView('upload');
             };
 
             const uploadPhoto = async () => {
                 setLoading(true);
-                const blob = await (await fetch(photo)).blob();
-                const formData = new FormData();
-                formData.append('photo', blob, 'pop.jpg');
-                formData.append('screen_id', screenData.id);
-                formData.append('operator_id', 'OP01');
-                formData.append('lat', location.lat);
-                formData.append('lng', location.lng);
-                formData.append('timestamp', new Date().toISOString());
-
                 try {
-                    await fetch(`${window.location.origin}/api/upload`, {
-                        method: 'POST',
-                        body: formData
-                    });
+                    const blob = await (await fetch(photo)).blob();
+                    const formData = new FormData();
+                    formData.append('photo', blob, 'pop.jpg');
+                    formData.append('screen_id', screenData.id);
+                    formData.append('operator_id', 'OP01');
+                    formData.append('lat', location.lat);
+                    formData.append('lng', location.lng);
+                    formData.append('timestamp', new Date().toISOString());
+                    await fetch(`${window.location.origin}/api/upload`, { method: 'POST', body: formData });
                     setView('success');
-                    fetchHistory(); // Refresh history
-                } catch (err) {
-                    alert("Upload failed.");
-                }
+                } catch (err) { alert("Upload failed"); }
                 setLoading(false);
             };
 
-            const fetchHistory = async () => {
-                try {
-                    const res = await fetch(`${window.location.origin}/api/dashboard/photos`);
-                    const data = await res.json();
-                    console.log("Fetched history:", data);
-                    setHistory(data); // Show all photos for testing
-                } catch (err) {
-                    console.error("Failed to fetch history", err);
-                }
-            };
-
-            useEffect(() => {
-                if (activeTab === 'tasks') {
-                    if (view === 'scan') startScanner();
-                    if (view === 'capture') {
-                        navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } })
-                            .then(stream => {
-                                const video = document.getElementById('video');
-                                if (video) video.srcObject = stream;
-                            });
-                    }
-                } else {
-                    if (scannerRef.current) {
-                        scannerRef.current.stop();
-                    }
-                    fetchHistory();
-                }
-            }, [view, activeTab]);
-
             return (
-                <div className="max-w-md mx-auto flex-1 flex flex-col bg-white shadow-xl overflow-hidden w-full">
-                    <header className="bg-red-600 p-4 text-white flex justify-between items-center shadow-md z-10">
-                        <h1 className="text-xl font-bold tracking-tight">TMN Ops</h1>
-                        <span className="text-[10px] bg-red-700 px-2 py-1 rounded-full font-medium">OP: Budi</span>
+                <div className="max-w-md mx-auto flex-1 flex flex-col bg-white shadow-2xl overflow-hidden w-full h-full">
+                    <header className="bg-red-600 p-4 text-white flex justify-between items-center shrink-0 z-20 font-black italic">
+                        <h1 className="text-xl">TMN OPS</h1>
+                        <span className="text-[10px] bg-red-800 px-3 py-1 rounded-full not-italic">BUDI</span>
                     </header>
 
-                    <main className="flex-1 flex flex-col overflow-hidden">
+                    <main className="flex-1 flex flex-col overflow-hidden bg-slate-50 relative">
                         {activeTab === 'tasks' ? (
-                            <div className="flex-1 flex flex-col p-4">
+                            <div className="flex-1 flex flex-col p-5 overflow-y-auto">
                                 {view === 'scan' && (
                                     <div className="flex-1 flex flex-col items-center justify-center">
-                                        <div className="bg-blue-50 p-4 rounded-lg mb-6 text-center">
-                                            <p className="text-blue-800 font-bold">READY TO SCAN</p>
-                                            <p className="text-blue-600 text-sm">Position QR code in the frame</p>
-                                        </div>
-                                        <div id="reader" className="w-full border-4 border-gray-200 rounded-xl overflow-hidden shadow-inner"></div>
-                                        
-                                        {/* Mock Scan Button for MVP Testing */}
-                                        <button 
-                                            onClick={() => handleScanSuccess('QR_S001')}
-                                            className="mt-8 text-gray-400 text-xs border border-gray-300 px-4 py-2 rounded-full active:bg-gray-200"
-                                        >
-                                            [ DEV ] MOCK SCAN (QR_S001)
-                                        </button>
-
-                                        {loading && <p className="mt-4 text-blue-600 animate-pulse font-bold">Verifying Screen...</p>}
+                                        <div className="bg-white p-6 rounded-3xl shadow-xl border border-slate-100 mb-8 text-center w-full font-black uppercase text-slate-900">Scan QR Code</div>
+                                        <div id="reader" className="w-full aspect-square border-8 border-white rounded-[40px] overflow-hidden shadow-2xl bg-slate-200"></div>
+                                        <button onClick={() => handleScanSuccess('QR_S001')} className="mt-8 text-slate-300 text-[10px] font-bold uppercase border border-slate-200 px-6 py-3 rounded-full tracking-widest">Dev: Mock Scan</button>
+                                        {loading && <div className="absolute inset-0 bg-white/80 flex items-center justify-center z-50 font-black text-blue-600 animate-pulse">VERIFYING...</div>}
                                     </div>
                                 )}
 
                                 {view === 'capture' && (
                                     <div className="flex-1 flex flex-col min-h-0">
-                                        <div className="mb-3 px-1">
-                                            <p className="text-[10px] text-red-600 uppercase font-bold tracking-tight">Verified Location</p>
-                                            <p className="text-lg font-bold text-gray-800 leading-tight truncate">{screenData.building_name}</p>
-                                            <p className="text-[10px] text-gray-500">Screen ID: {screenData.id}</p>
+                                        <div className="mb-4 bg-white p-4 rounded-2xl shadow-sm flex items-center justify-between">
+                                            <p className="text-base font-bold text-slate-900 truncate">{screenData?.building_name || '---'}</p>
+                                            <p className="text-[11px] font-black text-slate-400 font-mono">{screenData?.id || '---'}</p>
                                         </div>
-                                        
-                                        <div className="flex-1 bg-black rounded-2xl overflow-hidden relative shadow-inner">
-                                            <video id="video" autoPlay playsInline className="w-full h-full object-cover"></video>
-                                            <div className="camera-overlay">
-                                                <p className="font-bold">TMN POP | {screenData.id}</p>
-                                                <p>{new Date().toLocaleString()}</p>
-                                                <p>{location.lat.toFixed(4)}, {location.lng.toFixed(4)}</p>
-                                            </div>
+                                        <div className="flex-1 bg-black rounded-[32px] overflow-hidden relative shadow-2xl border-4 border-white">
+                                            <video id="video" autoPlay playsInline muted className="w-full h-full object-cover"></video>
                                         </div>
-
-                                        <div className="py-4">
-                                            <button 
-                                                onClick={takePhoto}
-                                                className="w-full bg-red-600 text-white py-4 rounded-2xl text-lg font-black shadow-lg active:scale-95 active:bg-red-700 transition-all"
-                                            >
-                                                CAPTURE PHOTO
-                                            </button>
+                                        <div className="py-6 shrink-0">
+                                            <button onClick={takePhoto} className="w-full bg-red-600 text-white py-5 rounded-[24px] text-xl font-black shadow-xl uppercase">Take Photo</button>
                                         </div>
                                     </div>
                                 )}
 
                                 {view === 'upload' && (
-                                    <div className="flex-1 flex flex-col">
-                                        <h2 className="text-lg font-bold mb-4 text-gray-800">Preview Submission</h2>
-                                        <div className="relative flex-1 bg-gray-200 rounded-xl overflow-hidden shadow-lg mb-6">
+                                    <div className="flex-1 flex flex-col min-h-0">
+                                        <h2 className="text-lg font-black mb-4 text-slate-900 uppercase italic">Confirm PoP</h2>
+                                        <div className="relative flex-1 bg-slate-200 rounded-[32px] overflow-hidden shadow-2xl border-4 border-white mb-6">
                                             <img src={photo} className="w-full h-full object-contain" />
                                         </div>
-                                        <div className="flex space-x-4">
-                                            <button onClick={() => setView('capture')} className="flex-1 border-2 border-gray-300 py-4 rounded-xl font-bold text-gray-600 active:bg-gray-100">RETAKE</button>
-                                            <button 
-                                                onClick={uploadPhoto} 
-                                                disabled={loading}
-                                                className="flex-1 bg-green-600 text-white py-4 rounded-xl font-bold shadow-md disabled:bg-gray-400 active:scale-95 transition-transform"
-                                            >
-                                                {loading ? 'UPLOADING...' : 'SUBMIT PoP'}
-                                            </button>
+                                        <div className="flex space-x-3 pb-4">
+                                            <button onClick={() => setView('capture')} className="flex-1 bg-white border-2 border-slate-200 py-4 rounded-2xl font-bold text-slate-400 uppercase text-xs">Retake</button>
+                                            <button onClick={uploadPhoto} disabled={loading} className="flex-[2] bg-green-600 text-white py-4 rounded-2xl font-black shadow-xl uppercase text-sm">Upload</button>
                                         </div>
                                     </div>
                                 )}
 
                                 {view === 'success' && (
-                                    <div className="flex-1 flex flex-col items-center justify-center text-center p-6">
-                                        <div className="w-24 h-24 bg-green-100 rounded-full flex items-center justify-center mb-6 animate-bounce">
-                                            <svg className="w-12 h-12 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7"></path></svg>
-                                        </div>
-                                        <h2 className="text-3xl font-black text-gray-800 mb-2">UPLOADED!</h2>
-                                        <p className="text-gray-500 mb-8 leading-relaxed">Proof of Play for <b>{screenData.id}</b> at <b>{screenData.building_name}</b> has been securely timestamped.</p>
-                                        <button 
-                                            onClick={() => setView('scan')}
-                                            className="w-full bg-red-600 text-white py-4 rounded-2xl font-bold shadow-lg active:scale-95 transition-transform"
-                                        >
-                                            SCAN NEXT SCREEN
-                                        </button>
+                                    <div className="flex-1 flex flex-col items-center justify-center text-center p-8 font-black uppercase">
+                                        <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mb-8"><svg className="w-10 h-10 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7"></path></svg></div>
+                                        <h2 className="text-3xl text-slate-900 mb-8 tracking-tighter">Done!</h2>
+                                        <button onClick={() => setView('scan')} className="w-full bg-red-600 text-white py-5 rounded-[24px] shadow-2xl text-sm">Scan Next</button>
                                     </div>
                                 )}
                             </div>
                         ) : (
-                            <div className="flex-1 flex flex-col overflow-hidden">
-                                <div className="p-4 bg-gray-50 border-b flex justify-between items-center">
-                                    <div>
-                                        <h2 className="text-lg font-bold text-gray-800">My PoP History</h2>
-                                        <p className="text-xs text-gray-500">Total: {history.length} uploads</p>
-                                    </div>
-                                    <button onClick={fetchHistory} className="p-2 text-blue-600 active:rotate-180 transition-transform">
-                                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-                                    </button>
+                            <div className="flex-1 flex flex-col overflow-hidden h-full">
+                                <div className="p-5 bg-white border-b border-slate-100 flex justify-between items-center shrink-0">
+                                    <h2 className="text-xl font-black text-slate-900 uppercase italic">History</h2>
+                                    <button onClick={fetchHistory} className="w-10 h-10 flex items-center justify-center text-blue-600 bg-blue-50 rounded-2xl active:rotate-180 transition-all duration-500"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg></button>
                                 </div>
-                                <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                                    {history.length === 0 ? (
-                                        <div className="text-center py-20">
-                                            <p className="text-gray-400 italic">No uploads yet today.</p>
-                                        </div>
+                                <div className="flex-1 overflow-y-auto p-5 space-y-4 pb-28">
+                                    {(history.length === 0) ? (
+                                        <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-slate-100"><p className="text-slate-300 font-bold uppercase tracking-widest text-[10px]">No activity</p></div>
                                     ) : (
-                                        history.map((item) => (
-                                            <div key={item.id} className="bg-white border rounded-xl overflow-hidden shadow-sm flex h-24">
-                                                <div className="w-24 h-full bg-gray-200">
-                                                    <img src={`${window.location.origin}${item.url}`} className="w-full h-full object-cover" />
+                                        history.map((item, idx) => (
+                                            <div key={item.id || `h-${idx}`} className="bg-white rounded-3xl overflow-hidden shadow-sm border border-slate-100 flex flex-col">
+                                                <div className="flex h-24">
+                                                    <div className="w-24 h-full bg-slate-100 shrink-0 relative">
+                                                        {item.url ? <img src={`${window.location.origin}${item.url}`} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[7px] text-slate-300 uppercase">No Img</div>}
+                                                    </div>
+                                                    <div className="flex-1 p-4 flex flex-col justify-between min-w-0">
+                                                        <div className="flex justify-between items-start">
+                                                            <p className="font-black text-xs truncate text-slate-900 uppercase">{item.building_name || 'UNDEFINED'}</p>
+                                                            <p className="text-[8px] font-mono text-blue-600 font-black">{formatTime(item.timestamp)}</p>
+                                                        </div>
+                                                        <div className="flex justify-between items-end">
+                                                            <p className="text-[9px] font-bold text-slate-400 truncate">ID: {item.qr_code || '---'}</p>
+                                                            <span className="text-[8px] px-2 py-1 bg-emerald-50 text-emerald-600 rounded-full font-black uppercase tracking-tighter shrink-0 border border-emerald-100">Verified</span>
+                                                        </div>
+                                                    </div>
                                                 </div>
-                                                <div className="flex-1 p-3 flex flex-col justify-between overflow-hidden">
-                                                    <div>
-                                                        <p className="font-bold text-sm truncate">{item.building_name}</p>
-                                                        <p className="text-[10px] text-gray-500">Screen: {item.qr_code}</p>
-                                                    </div>
-                                                    <div className="flex justify-between items-end">
-                                                        <p className="text-[10px] text-blue-600 font-mono">{new Date(item.timestamp).toLocaleTimeString()}</p>
-                                                        <span className="text-[10px] px-1.5 py-0.5 bg-green-100 text-green-700 rounded-full font-bold">VERIFIED</span>
-                                                    </div>
+                                                <div className="px-4 py-3 bg-slate-50/50 border-t border-slate-100 flex items-center space-x-3">
+                                                    <label className="text-[7px] font-black text-slate-400 uppercase shrink-0">Client</label>
+                                                    <select 
+                                                        className="flex-1 text-[11px] bg-white border border-slate-200 rounded-xl px-3 py-2 text-slate-700 outline-none font-bold"
+                                                        value={item.advertiser_id || ""}
+                                                        onChange={(e) => updatePhotoAdvertiser(item.id, e.target.value)}
+                                                    >
+                                                        <option value="">-- UNASSIGNED --</option>
+                                                        {advertisers.map((adv, aIdx) => (<option key={adv.id || `a-${aIdx}`} value={adv.id}>{safeUpper(adv.name)}</option>))}
+                                                    </select>
                                                 </div>
                                             </div>
                                         ))
@@ -323,20 +304,14 @@
                         )}
                     </main>
 
-                    <footer className="bg-white border-t flex justify-around shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] safe-pb">
-                        <button 
-                            onClick={() => { setActiveTab('tasks'); setView('scan'); }}
-                            className={`flex-1 flex flex-col items-center py-3 transition-colors ${activeTab === 'tasks' ? 'text-red-600' : 'text-gray-400'}`}
-                        >
-                            <svg className="w-6 h-6 mb-1" fill={activeTab === 'tasks' ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/></svg>
-                            <span className="text-[10px] font-bold">Tasks</span>
+                    <footer className="bg-white border-t border-slate-100 flex justify-around shadow-2xl shrink-0 safe-pb px-4">
+                        <button onClick={() => { setView('scan'); setActiveTab('tasks'); }} className={`flex-1 flex flex-col items-center py-4 transition-all duration-300 ${activeTab === 'tasks' ? 'text-red-600' : 'text-slate-300 opacity-60'}`}>
+                            <div className={`w-8 h-8 rounded-2xl flex items-center justify-center mb-1 ${activeTab === 'tasks' ? 'bg-red-50' : ''}`}><svg className="w-5 h-5" fill={activeTab === 'tasks' ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/></svg></div>
+                            <span className="text-[8px] font-black uppercase tracking-widest">Capture</span>
                         </button>
-                        <button 
-                            onClick={() => setActiveTab('history')}
-                            className={`flex-1 flex flex-col items-center py-3 transition-colors ${activeTab === 'history' ? 'text-red-600' : 'text-gray-400'}`}
-                        >
-                            <svg className="w-6 h-6 mb-1" fill={activeTab === 'history' ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg>
-                            <span className="text-[10px] font-bold">History</span>
+                        <button onClick={() => { setView('scan'); setActiveTab('history'); }} className={`flex-1 flex flex-col items-center py-4 transition-all duration-300 ${activeTab === 'history' ? 'text-red-600' : 'text-slate-300 opacity-60'}`}>
+                            <div className={`w-8 h-8 rounded-2xl flex items-center justify-center mb-1 ${activeTab === 'history' ? 'bg-red-50' : ''}`}><svg className="w-5 h-5" fill={activeTab === 'history' ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg></div>
+                            <span className="text-[8px] font-black uppercase tracking-widest">History</span>
                         </button>
                     </footer>
                 </div>

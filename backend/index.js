@@ -83,13 +83,20 @@ db.serialize(() => {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         screen_id TEXT,
         operator_id TEXT,
+        advertiser_id INTEGER,
         url TEXT,
         timestamp TEXT,
         lat REAL,
         lng REAL,
         status TEXT DEFAULT 'pending',
         FOREIGN KEY(screen_id) REFERENCES screens(id),
-        FOREIGN KEY(operator_id) REFERENCES operators(id)
+        FOREIGN KEY(operator_id) REFERENCES operators(id),
+        FOREIGN KEY(advertiser_id) REFERENCES advertisers(id)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS advertisers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL
     )`);
 
     // Seed some initial data
@@ -98,9 +105,36 @@ db.serialize(() => {
     db.run("INSERT OR IGNORE INTO screens VALUES ('S001', 'B001', 'QR_S001')");
     db.run("INSERT OR IGNORE INTO screens VALUES ('S002', 'B001', 'QR_S002')");
     db.run("INSERT OR IGNORE INTO operators VALUES ('OP01', 'Budi', 'Central')");
+    
+    // Seed Advertisers
+    db.all("SELECT COUNT(*) as count FROM advertisers", [], (err, rows) => {
+        if (rows && rows[0].count === 0) {
+            const clients = ['Coca Cola', 'Samsung', 'Toyota', 'Indofood', 'Shopee', 'Gojek'];
+            clients.forEach(name => {
+                db.run("INSERT INTO advertisers (name) VALUES (?)", [name]);
+            });
+        }
+    });
 });
 
 // API Endpoints
+
+// Get all advertisers
+app.get('/api/advertisers', (req, res) => {
+    db.all("SELECT * FROM advertisers ORDER BY name ASC", (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json(rows);
+    });
+});
+
+// Update photo advertiser
+app.post('/api/photos/update-advertiser', (req, res) => {
+    const { photo_id, advertiser_id } = req.body;
+    db.run("UPDATE photos SET advertiser_id = ? WHERE id = ?", [advertiser_id, photo_id], function(err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ success: true });
+    });
+});
 
 // Get screen by QR
 app.get('/api/screens/:qr', (req, res) => {
@@ -142,11 +176,12 @@ app.get('/api/dashboard/stats', (req, res) => {
 // Get all photos
 app.get('/api/dashboard/photos', (req, res) => {
     const query = `
-        SELECT photos.*, screens.qr_code, buildings.name as building_name, operators.name as operator_name
+        SELECT photos.*, screens.qr_code, buildings.name as building_name, operators.name as operator_name, advertisers.name as advertiser_name
         FROM photos
         JOIN screens ON photos.screen_id = screens.id
         JOIN buildings ON screens.building_id = buildings.id
         JOIN operators ON photos.operator_id = operators.id
+        LEFT JOIN advertisers ON photos.advertiser_id = advertisers.id
         ORDER BY photos.timestamp DESC`;
     db.all(query, (err, rows) => {
         if (err) return res.status(500).json({ error: err.message });
