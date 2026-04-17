@@ -19,14 +19,9 @@
         }
         #root { height: 100%; display: flex; flex-direction: column; }
         .safe-pb { padding-bottom: env(safe-area-inset-bottom); }
-        .camera-overlay {
-            position: absolute; bottom: 15px; left: 15px;
-            color: white; font-size: 10px; pointer-events: none;
-            background: rgba(0,0,0,0.5); padding: 8px; border-radius: 8px;
-            backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.1);
-        }
         #reader video { object-fit: cover !important; }
         .flex-1 { flex: 1 1 auto; min-height: 0; }
+        .card-selected { border-color: #ef4444 !important; background-color: #fef2f2 !important; }
     </style>
 </head>
 <body class="font-sans antialiased text-slate-900">
@@ -45,6 +40,10 @@
             const [history, setHistory] = useState([]);
             const [advertisers, setAdvertisers] = useState([]);
             
+            const [selectedIds, setSelectedIds] = useState([]);
+            const [advFilter, setAdvFilter] = useState("");
+            const [cycleFilter, setCycleFilter] = useState(true);
+
             const scannerRef = useRef(null);
             const streamRef = useRef(null);
 
@@ -55,8 +54,7 @@
                 try {
                     const dateStr = String(ts).replace(/-/g, '/').replace('T', ' ').split('.')[0];
                     const d = new Date(dateStr);
-                    if (isNaN(d.getTime())) return '--:--';
-                    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+                    return isNaN(d.getTime()) ? '--:--' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
                 } catch (e) { return '--:--'; }
             };
 
@@ -99,10 +97,26 @@
                 } catch (err) { console.error(err); }
             };
 
+            const syncToServer = async () => {
+                if (selectedIds.length === 0) return;
+                setLoading(true);
+                try {
+                    const res = await fetch(`${window.location.origin}/api/photos/export`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ photo_ids: selectedIds })
+                    });
+                    const data = await res.json();
+                    alert("SYNC SUCCESSFUL\n" + data.message);
+                    setSelectedIds([]);
+                } catch (err) { alert("Sync failed"); }
+                setLoading(false);
+            };
+
             useEffect(() => {
                 fetchAdvertisers();
                 fetchHistory();
-                return () => { stopAllMedia(); };
+                return () => stopAllMedia();
             }, []);
 
             useEffect(() => {
@@ -112,20 +126,13 @@
                         if (view === 'scan') startScanner();
                         if (view === 'capture') {
                             try {
-                                const stream = await navigator.mediaDevices.getUserMedia({ 
-                                    video: { facingMode: 'environment', width: { ideal: 1280 } } 
-                                });
+                                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 } } });
                                 streamRef.current = stream;
                                 const video = document.getElementById('video');
                                 if (video) video.srcObject = stream;
-                            } catch (err) {
-                                alert("Camera needed");
-                                setView('scan');
-                            }
+                            } catch (err) { setView('scan'); }
                         }
-                    } else {
-                        fetchHistory();
-                    }
+                    } else { fetchHistory(); }
                 };
                 initView();
             }, [view, activeTab]);
@@ -133,12 +140,7 @@
             const startScanner = () => {
                 const html5QrCode = new Html5Qrcode("reader");
                 scannerRef.current = html5QrCode;
-                html5QrCode.start(
-                    { facingMode: "environment" },
-                    { fps: 10, qrbox: { width: 250, height: 250 } },
-                    (decodedText) => { handleScanSuccess(decodedText); },
-                    () => {}
-                ).catch(err => console.error(err));
+                html5QrCode.start({ facingMode: "environment" }, { fps: 10, qrbox: { width: 250, height: 250 } }, (txt) => handleScanSuccess(txt), () => {}).catch(() => {});
             };
 
             const handleScanSuccess = async (decodedText) => {
@@ -154,13 +156,11 @@
                         setView('capture');
                         setLoading(false);
                     }, () => {
-                        alert("GPS needed");
                         setLocation({ lat: 0, lng: 0 });
                         setView('capture');
                         setLoading(false);
                     });
                 } catch (err) {
-                    alert("Invalid QR Code");
                     setLoading(false);
                     setView('scan');
                 }
@@ -203,10 +203,30 @@
                 setLoading(false);
             };
 
+            const filteredHistory = history.filter(item => {
+                if (advFilter && item.advertiser_id != advFilter) return false;
+                if (cycleFilter) {
+                    const d = new Date(item.timestamp);
+                    const start = new Date('2026-04-13T00:00:00');
+                    const end = new Date('2026-04-19T23:59:59');
+                    if (d < start || d > end) return false;
+                }
+                return true;
+            });
+
+            const toggleSelect = (id) => {
+                setSelectedIds(prev => prev.includes(id) ? prev.filter(i => i !== id) : [...prev, id]);
+            };
+
+            const selectAllFiltered = () => {
+                const allFilteredIds = filteredHistory.map(h => h.id);
+                setSelectedIds(allFilteredIds);
+            };
+
             return (
-                <div className="max-w-md mx-auto flex-1 flex flex-col bg-white shadow-2xl overflow-hidden w-full h-full">
+                <div className="max-w-md mx-auto flex-1 flex flex-col bg-white shadow-2xl overflow-hidden w-full h-full text-slate-900">
                     <header className="bg-red-600 p-4 text-white flex justify-between items-center shrink-0 z-20 font-black italic">
-                        <h1 className="text-xl">TMN OPS</h1>
+                        <h1 className="text-xl tracking-tighter">TMN OPS</h1>
                         <span className="text-[10px] bg-red-800 px-3 py-1 rounded-full not-italic">BUDI</span>
                     </header>
 
@@ -215,17 +235,16 @@
                             <div className="flex-1 flex flex-col p-5 overflow-y-auto">
                                 {view === 'scan' && (
                                     <div className="flex-1 flex flex-col items-center justify-center">
-                                        <div className="bg-white p-6 rounded-3xl shadow-xl border border-slate-100 mb-8 text-center w-full font-black uppercase text-slate-900">Scan QR Code</div>
+                                        <div className="bg-white p-6 rounded-3xl shadow-xl border border-slate-100 mb-8 text-center w-full font-black uppercase">Scan Screen QR</div>
                                         <div id="reader" className="w-full aspect-square border-8 border-white rounded-[40px] overflow-hidden shadow-2xl bg-slate-200"></div>
-                                        <button onClick={() => handleScanSuccess('QR_S001')} className="mt-8 text-slate-300 text-[10px] font-bold uppercase border border-slate-200 px-6 py-3 rounded-full tracking-widest">Dev: Mock Scan</button>
+                                        <button onClick={() => handleScanSuccess('QR_S001')} className="mt-8 text-slate-300 text-[10px] font-bold uppercase border border-slate-200 px-6 py-3 rounded-full">Dev: Mock Scan</button>
                                         {loading && <div className="absolute inset-0 bg-white/80 flex items-center justify-center z-50 font-black text-blue-600 animate-pulse">VERIFYING...</div>}
                                     </div>
                                 )}
-
                                 {view === 'capture' && (
                                     <div className="flex-1 flex flex-col min-h-0">
                                         <div className="mb-4 bg-white p-4 rounded-2xl shadow-sm flex items-center justify-between">
-                                            <p className="text-base font-bold text-slate-900 truncate">{screenData?.building_name || '---'}</p>
+                                            <p className="text-base font-bold truncate">{screenData?.building_name || '---'}</p>
                                             <p className="text-[11px] font-black text-slate-400 font-mono">{screenData?.id || '---'}</p>
                                         </div>
                                         <div className="flex-1 bg-black rounded-[32px] overflow-hidden relative shadow-2xl border-4 border-white">
@@ -236,62 +255,71 @@
                                         </div>
                                     </div>
                                 )}
-
                                 {view === 'upload' && (
                                     <div className="flex-1 flex flex-col min-h-0">
-                                        <h2 className="text-lg font-black mb-4 text-slate-900 uppercase italic">Confirm PoP</h2>
+                                        <h2 className="text-lg font-black mb-4 uppercase italic">Confirm PoP</h2>
                                         <div className="relative flex-1 bg-slate-200 rounded-[32px] overflow-hidden shadow-2xl border-4 border-white mb-6">
                                             <img src={photo} className="w-full h-full object-contain" />
                                         </div>
                                         <div className="flex space-x-3 pb-4">
-                                            <button onClick={() => setView('capture')} className="flex-1 bg-white border-2 border-slate-200 py-4 rounded-2xl font-bold text-slate-400 uppercase text-xs">Retake</button>
+                                            <button onClick={() => setView('capture')} className="flex-1 bg-white border-2 border-slate-200 py-4 rounded-2xl font-bold text-slate-400 uppercase text-xs text-center flex items-center justify-center">Retake</button>
                                             <button onClick={uploadPhoto} disabled={loading} className="flex-[2] bg-green-600 text-white py-4 rounded-2xl font-black shadow-xl uppercase text-sm">Upload</button>
                                         </div>
                                     </div>
                                 )}
-
                                 {view === 'success' && (
                                     <div className="flex-1 flex flex-col items-center justify-center text-center p-8 font-black uppercase">
                                         <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mb-8"><svg className="w-10 h-10 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" d="M5 13l4 4L19 7"></path></svg></div>
                                         <h2 className="text-3xl text-slate-900 mb-8 tracking-tighter">Done!</h2>
-                                        <button onClick={() => setView('scan')} className="w-full bg-red-600 text-white py-5 rounded-[24px] shadow-2xl text-sm">Scan Next</button>
+                                        <button onClick={() => setView('scan')} className="w-full bg-red-600 text-white py-5 rounded-[24px] shadow-2xl text-sm tracking-widest font-black uppercase">Scan Next</button>
                                     </div>
                                 )}
                             </div>
                         ) : (
                             <div className="flex-1 flex flex-col overflow-hidden h-full">
-                                <div className="p-5 bg-white border-b border-slate-100 flex justify-between items-center shrink-0">
-                                    <h2 className="text-xl font-black text-slate-900 uppercase italic">History</h2>
-                                    <button onClick={fetchHistory} className="w-10 h-10 flex items-center justify-center text-blue-600 bg-blue-50 rounded-2xl active:rotate-180 transition-all duration-500"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg></button>
+                                <div className="p-4 bg-white border-b border-slate-100 shrink-0">
+                                    <div className="flex justify-between items-center mb-3">
+                                        <h2 className="text-xl font-black uppercase italic tracking-tight">System History</h2>
+                                        <button onClick={selectAllFiltered} className="text-[9px] font-black text-blue-600 bg-blue-50 px-3 py-2 rounded-lg border border-blue-100 uppercase tracking-widest">Select All</button>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <div className="flex space-x-2">
+                                            <select className="flex-1 text-[10px] bg-slate-50 border border-slate-200 rounded-lg p-2 font-bold outline-none" value={advFilter} onChange={(e) => setAdvFilter(e.target.value)}>
+                                                <option value="">ALL CLIENTS</option>
+                                                {advertisers.map(a => <option key={a.id} value={a.id}>{a.name.toUpperCase()}</option>)}
+                                            </select>
+                                            <button onClick={() => setCycleFilter(!cycleFilter)} className={`px-4 py-2 text-[10px] font-black rounded-lg border transition-all ${cycleFilter ? 'bg-red-600 border-red-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-400'}`}>WEEKLY</button>
+                                        </div>
+                                        {cycleFilter && <p className="text-[8px] font-black text-red-500 uppercase tracking-[0.2em] text-center">Cycle: 2026/04/13 - 2026/04/19</p>}
+                                    </div>
                                 </div>
-                                <div className="flex-1 overflow-y-auto p-5 space-y-4 pb-28">
-                                    {(history.length === 0) ? (
-                                        <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-slate-100"><p className="text-slate-300 font-bold uppercase tracking-widest text-[10px]">No activity</p></div>
+                                <div className="flex-1 overflow-y-auto p-4 space-y-3 pb-36">
+                                    {filteredHistory.length === 0 ? (
+                                        <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-slate-100 text-slate-300 font-bold uppercase text-[10px]">No activity</div>
                                     ) : (
-                                        history.map((item, idx) => (
-                                            <div key={item.id || `h-${idx}`} className="bg-white rounded-3xl overflow-hidden shadow-sm border border-slate-100 flex flex-col">
+                                        filteredHistory.map((item, idx) => (
+                                            <div key={item.id || `h-${idx}`} className={`bg-white rounded-3xl overflow-hidden shadow-sm border transition-all flex flex-col relative ${selectedIds.includes(item.id) ? 'border-red-600 ring-4 ring-red-100' : 'border-slate-100'}`} onClick={() => toggleSelect(item.id)}>
                                                 <div className="flex h-24">
                                                     <div className="w-24 h-full bg-slate-100 shrink-0 relative">
                                                         {item.url ? <img src={`${window.location.origin}${item.url}`} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-[7px] text-slate-300 uppercase">No Img</div>}
+                                                        <div className={`absolute top-2 left-2 w-5 h-5 rounded-full border-2 flex items-center justify-center ${selectedIds.includes(item.id) ? 'bg-red-600 border-red-600 shadow-lg' : 'bg-white/80 border-slate-300'}`}>
+                                                            {selectedIds.includes(item.id) && <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="4"><path d="M5 13l4 4L19 7"></path></svg>}
+                                                        </div>
                                                     </div>
                                                     <div className="flex-1 p-4 flex flex-col justify-between min-w-0">
                                                         <div className="flex justify-between items-start">
-                                                            <p className="font-black text-xs truncate text-slate-900 uppercase">{item.building_name || 'UNDEFINED'}</p>
+                                                            <p className="font-black text-xs truncate text-slate-900 uppercase leading-none">{item.building_name || 'UNDEFINED'}</p>
                                                             <p className="text-[8px] font-mono text-blue-600 font-black">{formatTime(item.timestamp)}</p>
                                                         </div>
-                                                        <div className="flex justify-between items-end">
+                                                        <div className="flex justify-between items-center">
                                                             <p className="text-[9px] font-bold text-slate-400 truncate">ID: {item.qr_code || '---'}</p>
                                                             <span className="text-[8px] px-2 py-1 bg-emerald-50 text-emerald-600 rounded-full font-black uppercase tracking-tighter shrink-0 border border-emerald-100">Verified</span>
                                                         </div>
                                                     </div>
                                                 </div>
-                                                <div className="px-4 py-3 bg-slate-50/50 border-t border-slate-100 flex items-center space-x-3">
+                                                <div className="px-4 py-3 bg-slate-50 border-t border-slate-100 flex items-center space-x-3" onClick={(e) => e.stopPropagation()}>
                                                     <label className="text-[7px] font-black text-slate-400 uppercase shrink-0">Client</label>
-                                                    <select 
-                                                        className="flex-1 text-[11px] bg-white border border-slate-200 rounded-xl px-3 py-2 text-slate-700 outline-none font-bold"
-                                                        value={item.advertiser_id || ""}
-                                                        onChange={(e) => updatePhotoAdvertiser(item.id, e.target.value)}
-                                                    >
+                                                    <select className="flex-1 text-[11px] bg-white border border-slate-200 rounded-xl px-3 py-2 text-slate-700 outline-none font-bold" value={item.advertiser_id || ""} onChange={(e) => updatePhotoAdvertiser(item.id, e.target.value)}>
                                                         <option value="">-- UNASSIGNED --</option>
                                                         {advertisers.map((adv, aIdx) => (<option key={adv.id || `a-${aIdx}`} value={adv.id}>{safeUpper(adv.name)}</option>))}
                                                     </select>
@@ -299,6 +327,16 @@
                                             </div>
                                         ))
                                     )}
+                                </div>
+                                <div className="absolute bottom-20 left-0 right-0 p-4 bg-gradient-to-t from-slate-50 via-slate-50 to-transparent pt-10 z-40">
+                                    <button 
+                                        onClick={syncToServer}
+                                        disabled={selectedIds.length === 0 || loading}
+                                        className={`w-full py-4 rounded-[24px] font-black shadow-2xl uppercase tracking-widest text-xs flex items-center justify-center space-x-3 transition-all ${selectedIds.length > 0 ? 'bg-slate-900 text-white active:scale-95' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}
+                                    >
+                                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth="2.5"><path d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
+                                        <span>{selectedIds.length > 0 ? `UPLOAD ${selectedIds.length} SELECTED` : 'SELECT PHOTOS TO UPLOAD'}</span>
+                                    </button>
                                 </div>
                             </div>
                         )}
@@ -309,7 +347,7 @@
                             <div className={`w-8 h-8 rounded-2xl flex items-center justify-center mb-1 ${activeTab === 'tasks' ? 'bg-red-50' : ''}`}><svg className="w-5 h-5" fill={activeTab === 'tasks' ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z"/></svg></div>
                             <span className="text-[8px] font-black uppercase tracking-widest">Capture</span>
                         </button>
-                        <button onClick={() => { setView('scan'); setActiveTab('history'); }} className={`flex-1 flex flex-col items-center py-4 transition-all duration-300 ${activeTab === 'history' ? 'text-red-600' : 'text-slate-300 opacity-60'}`}>
+                        <button onClick={() => { setActiveTab('history'); }} className={`flex-1 flex flex-col items-center py-4 transition-all duration-300 ${activeTab === 'history' ? 'text-red-600' : 'text-slate-300 opacity-60'}`}>
                             <div className={`w-8 h-8 rounded-2xl flex items-center justify-center mb-1 ${activeTab === 'history' ? 'bg-red-50' : ''}`}><svg className="w-5 h-5" fill={activeTab === 'history' ? 'currentColor' : 'none'} stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"></path></svg></div>
                             <span className="text-[8px] font-black uppercase tracking-widest">History</span>
                         </button>
@@ -317,7 +355,6 @@
                 </div>
             );
         };
-
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<App />);
     </script>

@@ -5,3 +5,4 @@ backend/uploads/*
 backend/key.pem
 backend/cert.pem
 backend/tmn_pop.db
+backend/exported/*

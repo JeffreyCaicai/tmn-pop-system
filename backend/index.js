@@ -189,6 +189,56 @@ app.get('/api/dashboard/photos', (req, res) => {
     });
 });
 
+// Export / Sync photos to specific folder with custom naming
+app.post('/api/photos/export', (req, res) => {
+    const { photo_ids } = req.body;
+    if (!photo_ids || !Array.isArray(photo_ids)) return res.status(400).json({ error: 'No photos selected' });
+
+    const exportDir = path.join(__dirname, 'exported');
+    if (!fs.existsSync(exportDir)) fs.mkdirSync(exportDir);
+
+    const query = `
+        SELECT photos.*, advertisers.name as adv_name, buildings.name as bld_name
+        FROM photos
+        JOIN screens ON photos.screen_id = screens.id
+        JOIN buildings ON screens.building_id = buildings.id
+        LEFT JOIN advertisers ON photos.advertiser_id = advertisers.id
+        WHERE photos.id IN (${photo_ids.map(() => '?').join(',')})`;
+
+    db.all(query, photo_ids, (err, rows) => {
+        if (err) return res.status(500).json({ error: err.message });
+        
+        console.log(`Exporting ${rows.length} photos...`);
+        let successCount = 0;
+
+        rows.forEach(row => {
+            const adv = (row.adv_name || 'Unassigned').replace(/\s+/g, '-');
+            const bld = (row.bld_name || 'Unknown').replace(/\s+/g, '-');
+            const time = row.timestamp.replace(/[:T]/g, '-').split('.')[0];
+            // Added ID to filename to ensure uniqueness
+            const newFileName = `${adv}_${bld}_${time}_ID${row.id}.jpg`;
+            
+            const relativeUrl = row.url.replace(/^\//, '');
+            const sourcePath = path.join(__dirname, relativeUrl);
+            const destPath = path.join(exportDir, newFileName);
+            
+            if (fs.existsSync(sourcePath)) {
+                fs.copyFileSync(sourcePath, destPath);
+                successCount++;
+                console.log(`[SUCCESS] ${row.id} synced as ${newFileName}`);
+            } else {
+                console.warn(`[FAILED] ${row.id} source file not found at ${sourcePath}`);
+            }
+        });
+
+        res.json({ 
+            success: true, 
+            count: successCount, 
+            message: `Successfully synced ${successCount} photos to exported folder.` 
+        });
+    });
+});
+
 https.createServer(options, app).listen(PORT, () => {
     console.log(`Backend running at https://localhost:${PORT}`);
     console.log(`NOTE: If accessing from mobile, use your computer's IP address (e.g., https://192.168.1.5:3001)`);
