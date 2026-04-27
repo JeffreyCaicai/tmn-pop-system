@@ -23,28 +23,45 @@
             flagged: { label: 'Flagged', chip: 'bg-blue-50 text-blue-700 border-blue-200' },
             exported: { label: 'Exported', chip: 'bg-slate-900 text-white border-slate-900' }
         };
+        const TASK_META = {
+            not_started: 'Not Started',
+            captured: 'Captured',
+            under_review: 'Under Review',
+            approved: 'Approved',
+            rejected: 'Rejected',
+            exported: 'Exported'
+        };
 
         const App = () => {
+            const [view, setView] = useState('overview');
             const [stats, setStats] = useState({});
             const [photos, setPhotos] = useState([]);
             const [advertisers, setAdvertisers] = useState([]);
+            const [operators, setOperators] = useState([]);
+            const [campaigns, setCampaigns] = useState([]);
+            const [tasks, setTasks] = useState([]);
+            const [sites, setSites] = useState([]);
+            const [exceptions, setExceptions] = useState([]);
             const [exportsLog, setExportsLog] = useState([]);
             const [cycle, setCycle] = useState({ name: 'Weekly PoP Cycle', start: '', end: '' });
             const [filters, setFilters] = useState({ advertiser_id: '', status: 'all', cycleOnly: true });
             const [selectedIds, setSelectedIds] = useState([]);
+            const [selectedTaskScreens, setSelectedTaskScreens] = useState([]);
             const [activePhotoId, setActivePhotoId] = useState(null);
+            const [activeCampaignId, setActiveCampaignId] = useState('');
+            const [newCampaign, setNewCampaign] = useState({ name: '', advertiser_id: '', start_date: '', end_date: '' });
+            const [assignment, setAssignment] = useState({ operator_id: '', due_at: '' });
+            const [siteImportText, setSiteImportText] = useState('[{"building_id":"B003","building_name":"Kuningan Plaza","lat":-6.224,"lng":106.829,"screen_id":"S003","qr_code":"QR_S003"}]');
             const [notice, setNotice] = useState('');
             const [loading, setLoading] = useState(true);
 
-            useEffect(() => {
-                bootstrap();
-            }, []);
-
+            useEffect(() => { bootstrap(); }, []);
             useEffect(() => {
                 refreshOperationalData();
-                const timer = setInterval(refreshOperationalData, 8000);
+                const timer = setInterval(refreshOperationalData, 10000);
                 return () => clearInterval(timer);
             }, [filters.advertiser_id, filters.status, filters.cycleOnly, cycle.start, cycle.end]);
+            useEffect(() => { if (activeCampaignId) fetchTasks(activeCampaignId); }, [activeCampaignId]);
 
             const queryString = () => {
                 const params = new URLSearchParams();
@@ -60,12 +77,19 @@
             const bootstrap = async () => {
                 setLoading(true);
                 try {
-                    const [cycleRes, advertiserRes] = await Promise.all([
+                    const [cycleRes, advertiserRes, operatorRes, sitesRes] = await Promise.all([
                         fetch(`${API_BASE}/api/settings/cycle`),
-                        fetch(`${API_BASE}/api/advertisers`)
+                        fetch(`${API_BASE}/api/advertisers`),
+                        fetch(`${API_BASE}/api/operators`),
+                        fetch(`${API_BASE}/api/sites`)
                     ]);
-                    setCycle(await cycleRes.json());
+                    const cycleData = await cycleRes.json();
+                    setCycle(cycleData);
+                    setNewCampaign({ name: cycleData.name || 'Weekly PoP Cycle', advertiser_id: '', start_date: cycleData.start, end_date: cycleData.end });
                     setAdvertisers(await advertiserRes.json());
+                    setOperators(await operatorRes.json());
+                    setSites(await sitesRes.json());
+                    await refreshManagementData();
                     await refreshOperationalData();
                 } catch (err) {
                     setNotice('Unable to load dashboard data.');
@@ -74,20 +98,36 @@
                 }
             };
 
+            const refreshManagementData = async () => {
+                const [campaignRes, sitesRes, exceptionsRes, exportsRes] = await Promise.all([
+                    fetch(`${API_BASE}/api/campaigns`),
+                    fetch(`${API_BASE}/api/sites`),
+                    fetch(`${API_BASE}/api/dashboard/exceptions`),
+                    fetch(`${API_BASE}/api/dashboard/exports`)
+                ]);
+                const campaignRows = await campaignRes.json();
+                setCampaigns(Array.isArray(campaignRows) ? campaignRows : []);
+                setSites(await sitesRes.json());
+                setExceptions(await exceptionsRes.json());
+                setExportsLog(await exportsRes.json());
+                setActiveCampaignId(current => current || (campaignRows[0] ? String(campaignRows[0].id) : ''));
+            };
+
             const refreshOperationalData = async () => {
                 try {
                     const qs = queryString();
-                    const [statsRes, photosRes, exportsRes] = await Promise.all([
+                    const [statsRes, photosRes, exportsRes, exceptionsRes] = await Promise.all([
                         fetch(`${API_BASE}/api/dashboard/stats${qs ? `?${qs}` : ''}`),
                         fetch(`${API_BASE}/api/dashboard/photos${qs ? `?${qs}` : ''}`),
-                        fetch(`${API_BASE}/api/dashboard/exports`)
+                        fetch(`${API_BASE}/api/dashboard/exports`),
+                        fetch(`${API_BASE}/api/dashboard/exceptions`)
                     ]);
-                    const nextStats = await statsRes.json();
                     const nextPhotos = await photosRes.json();
                     const photoRows = Array.isArray(nextPhotos) ? nextPhotos : [];
-                    setStats(nextStats);
+                    setStats(await statsRes.json());
                     setPhotos(photoRows);
                     setExportsLog(await exportsRes.json());
+                    setExceptions(await exceptionsRes.json());
                     setSelectedIds(prev => prev.filter(id => photoRows.some(photo => photo.id === id)));
                     setActivePhotoId(current => current || (photoRows[0] ? photoRows[0].id : null));
                 } catch (err) {
@@ -95,31 +135,97 @@
                 }
             };
 
-            const activePhoto = useMemo(() => {
-                return photos.find(photo => photo.id === activePhotoId) || photos[0] || null;
-            }, [photos, activePhotoId]);
+            const fetchTasks = async (campaignId) => {
+                const res = await fetch(`${API_BASE}/api/campaigns/${campaignId}/tasks`);
+                const rows = await res.json();
+                setTasks(Array.isArray(rows) ? rows : []);
+                setSelectedTaskScreens([]);
+            };
 
-            const completionRate = stats.total_screens > 0
-                ? Math.min(100, (stats.completed_photos / stats.total_screens) * 100).toFixed(1)
-                : '0.0';
+            const activePhoto = useMemo(() => photos.find(photo => photo.id === activePhotoId) || photos[0] || null, [photos, activePhotoId]);
+            const activeCampaign = useMemo(() => campaigns.find(item => String(item.id) === String(activeCampaignId)) || campaigns[0] || null, [campaigns, activeCampaignId]);
+            const completionRate = stats.total_screens > 0 ? Math.min(100, (stats.completed_photos / stats.total_screens) * 100).toFixed(1) : '0.0';
 
             const formatDateTime = (value) => {
                 if (!value) return '--';
                 const date = new Date(value);
                 return Number.isNaN(date.getTime()) ? '--' : date.toLocaleString();
             };
-
             const statusChip = (status) => {
                 const meta = STATUS_META[status || 'pending'] || STATUS_META.pending;
                 return <span className={`inline-flex items-center rounded border px-2 py-1 text-[11px] font-black uppercase ${meta.chip}`}>{meta.label}</span>;
             };
-
-            const toggleSelect = (id) => {
-                setSelectedIds(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]);
+            const taskChip = (status) => {
+                const classes = status === 'approved' || status === 'exported' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : status === 'rejected' ? 'bg-red-50 text-red-700 border-red-200' : status === 'captured' || status === 'under_review' ? 'bg-blue-50 text-blue-700 border-blue-200' : 'bg-slate-50 text-slate-600 border-slate-200';
+                return <span className={`rounded border px-2 py-1 text-[11px] font-black uppercase ${classes}`}>{TASK_META[status] || status}</span>;
             };
 
-            const selectVisible = () => setSelectedIds(photos.map(photo => photo.id));
-            const clearSelection = () => setSelectedIds([]);
+            const saveCycle = async () => {
+                const res = await fetch(`${API_BASE}/api/settings/cycle`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(cycle)
+                });
+                setNotice(res.ok ? 'Cycle settings saved.' : 'Cycle settings were not saved.');
+                refreshOperationalData();
+            };
+
+            const createCampaign = async () => {
+                const res = await fetch(`${API_BASE}/api/campaigns`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(newCampaign)
+                });
+                const data = await res.json();
+                if (res.ok) {
+                    setNotice('Campaign created.');
+                    await refreshManagementData();
+                    setActiveCampaignId(String(data.id));
+                } else {
+                    setNotice(data.error || 'Campaign was not created.');
+                }
+            };
+
+            const generateTasks = async () => {
+                if (!activeCampaignId) return;
+                const res = await fetch(`${API_BASE}/api/campaigns/${activeCampaignId}/generate-tasks`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({})
+                });
+                const data = await res.json();
+                setNotice(`Generated ${data.count || 0} task rows.`);
+                refreshManagementData();
+                fetchTasks(activeCampaignId);
+            };
+
+            const assignSelectedTasks = async () => {
+                if (!activeCampaignId || !assignment.operator_id || selectedTaskScreens.length === 0) return;
+                const res = await fetch(`${API_BASE}/api/assignments`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ campaign_id: activeCampaignId, screen_ids: selectedTaskScreens, operator_id: assignment.operator_id, due_at: assignment.due_at })
+                });
+                const data = await res.json();
+                setNotice(`Assigned ${data.count || 0} screens.`);
+                fetchTasks(activeCampaignId);
+            };
+
+            const importSites = async () => {
+                try {
+                    const sites = JSON.parse(siteImportText);
+                    const res = await fetch(`${API_BASE}/api/sites/import`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ sites })
+                    });
+                    const data = await res.json();
+                    setNotice(`Imported ${data.imported || 0} new screens.`);
+                    refreshManagementData();
+                } catch (err) {
+                    setNotice('Import failed. Check the JSON format.');
+                }
+            };
 
             const updatePhotoAdvertiser = async (photoId, advertiserId) => {
                 await fetch(`${API_BASE}/api/photos/update-advertiser`, {
@@ -130,7 +236,6 @@
                 setNotice('Client assignment updated.');
                 refreshOperationalData();
             };
-
             const updatePhotoStatus = async (photoId, status, note = '') => {
                 await fetch(`${API_BASE}/api/photos/update-status`, {
                     method: 'POST',
@@ -139,16 +244,14 @@
                 });
                 setNotice(`Photo marked as ${status}.`);
                 refreshOperationalData();
+                if (activeCampaignId) fetchTasks(activeCampaignId);
             };
-
             const bulkStatus = async (status) => {
                 if (selectedIds.length === 0) return;
                 await Promise.all(selectedIds.map(id => updatePhotoStatus(id, status)));
                 setNotice(`${selectedIds.length} photos marked as ${status}.`);
-                clearSelection();
-                refreshOperationalData();
+                setSelectedIds([]);
             };
-
             const exportSelected = async () => {
                 if (selectedIds.length === 0) return;
                 const res = await fetch(`${API_BASE}/api/photos/export`, {
@@ -158,23 +261,14 @@
                 });
                 const data = await res.json();
                 setNotice(data.message || 'Export finished.');
-                clearSelection();
+                setSelectedIds([]);
                 refreshOperationalData();
+                refreshManagementData();
             };
 
-            const saveCycle = async () => {
-                const res = await fetch(`${API_BASE}/api/settings/cycle`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(cycle)
-                });
-                if (res.ok) {
-                    setNotice('Cycle settings saved.');
-                    refreshOperationalData();
-                } else {
-                    setNotice('Cycle settings were not saved.');
-                }
-            };
+            const toggleTask = (screenId) => setSelectedTaskScreens(prev => prev.includes(screenId) ? prev.filter(id => id !== screenId) : [...prev, screenId]);
+            const togglePhoto = (id) => setSelectedIds(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]);
+            const navItems = ['overview', 'campaigns', 'review', 'sites', 'exceptions', 'delivery'];
 
             return (
                 <div className="min-h-screen bg-slate-100">
@@ -182,11 +276,11 @@
                         <div className="p-6">
                             <div className="text-xs font-black uppercase tracking-[0.3em] text-red-500">TMN POP</div>
                             <h1 className="mt-3 text-2xl font-black tracking-tight">Command Center</h1>
-                            <p className="mt-2 text-sm text-slate-400">PoP operations, review, and delivery</p>
+                            <p className="mt-2 text-sm text-slate-400">V1 operations console</p>
                         </div>
                         <nav className="space-y-1 px-3 text-sm font-bold">
-                            {['Overview', 'Proof Review', 'Delivery', 'Settings'].map((item, idx) => (
-                                <div key={item} className={`rounded px-4 py-3 ${idx === 1 ? 'bg-red-600 text-white' : 'text-slate-400'}`}>{item}</div>
+                            {navItems.map(item => (
+                                <button key={item} onClick={() => setView(item)} className={`block w-full rounded px-4 py-3 text-left capitalize ${view === item ? 'bg-red-600 text-white' : 'text-slate-400 hover:bg-slate-900'}`}>{item}</button>
                             ))}
                         </nav>
                     </aside>
@@ -195,7 +289,7 @@
                         <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 px-5 py-4 backdrop-blur lg:px-8">
                             <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
                                 <div>
-                                    <h2 className="text-2xl font-black tracking-tight">Proof Review MVP</h2>
+                                    <h2 className="text-2xl font-black tracking-tight">TMN Admin V1</h2>
                                     <p className="text-sm text-slate-500">{cycle.name} · {cycle.start || '--'} to {cycle.end || '--'}</p>
                                 </div>
                                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-4 xl:w-[720px]">
@@ -208,167 +302,138 @@
                         </header>
 
                         <section className="px-5 py-6 lg:px-8">
-                            {notice && (
-                                <div className="mb-4 flex items-center justify-between rounded border border-red-100 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">
-                                    <span>{notice}</span>
-                                    <button onClick={() => setNotice('')} className="text-red-900">Close</button>
-                                </div>
-                            )}
-
-                            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
-                                <Metric label="Completion" value={`${completionRate}%`} tone="text-emerald-600" />
-                                <Metric label="Total Screens" value={stats.total_screens || 0} />
-                                <Metric label="Captured" value={stats.completed_photos || 0} tone="text-blue-600" />
-                                <Metric label="Pending" value={stats.pending_photos || 0} tone="text-amber-600" />
-                                <Metric label="Approved" value={stats.approved_photos || 0} tone="text-emerald-600" />
-                                <Metric label="Exceptions" value={(stats.rejected_photos || 0) + (stats.flagged_photos || 0)} tone="text-red-600" />
-                            </div>
-
-                            <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
-                                <div className="rounded border border-slate-200 bg-white">
-                                    <div className="border-b border-slate-200 p-4">
-                                        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
-                                            <div>
-                                                <h3 className="text-lg font-black">Review Queue</h3>
-                                                <p className="text-sm text-slate-500">{photos.length} photos in current filter · {selectedIds.length} selected</p>
-                                            </div>
-                                            <div className="flex flex-wrap gap-2">
-                                                <select className="rounded border border-slate-200 px-3 py-2 text-sm font-bold outline-none" value={filters.advertiser_id} onChange={(e) => setFilters({ ...filters, advertiser_id: e.target.value })}>
-                                                    <option value="">All Clients</option>
-                                                    {advertisers.map(ad => <option key={ad.id} value={ad.id}>{ad.name}</option>)}
-                                                </select>
-                                                <select className="rounded border border-slate-200 px-3 py-2 text-sm font-bold outline-none" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
-                                                    {Object.entries(STATUS_META).map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}
-                                                </select>
-                                                <button onClick={() => setFilters({ ...filters, cycleOnly: !filters.cycleOnly })} className={`rounded border px-3 py-2 text-sm font-black ${filters.cycleOnly ? 'border-red-600 bg-red-600 text-white' : 'border-slate-200 bg-white text-slate-500'}`}>Cycle</button>
-                                            </div>
-                                        </div>
-                                        <div className="mt-4 flex flex-wrap gap-2">
-                                            <button onClick={selectVisible} className="rounded border border-slate-200 px-3 py-2 text-xs font-black uppercase text-slate-700">Select Visible</button>
-                                            <button onClick={clearSelection} className="rounded border border-slate-200 px-3 py-2 text-xs font-black uppercase text-slate-700">Clear</button>
-                                            <button onClick={() => bulkStatus('approved')} disabled={!selectedIds.length} className="rounded bg-emerald-600 px-3 py-2 text-xs font-black uppercase text-white disabled:bg-slate-300">Approve</button>
-                                            <button onClick={() => bulkStatus('flagged')} disabled={!selectedIds.length} className="rounded bg-blue-600 px-3 py-2 text-xs font-black uppercase text-white disabled:bg-slate-300">Flag</button>
-                                            <button onClick={() => bulkStatus('rejected')} disabled={!selectedIds.length} className="rounded bg-red-600 px-3 py-2 text-xs font-black uppercase text-white disabled:bg-slate-300">Reject</button>
-                                            <button onClick={exportSelected} disabled={!selectedIds.length} className="rounded bg-slate-900 px-3 py-2 text-xs font-black uppercase text-white disabled:bg-slate-300">Export Selected</button>
-                                        </div>
-                                    </div>
-
-                                    <div className="overflow-x-auto">
-                                        <table className="w-full min-w-[980px] text-left text-sm">
-                                            <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-                                                <tr>
-                                                    <th className="w-12 px-4 py-3"></th>
-                                                    <th className="px-4 py-3">Photo</th>
-                                                    <th className="px-4 py-3">Site</th>
-                                                    <th className="px-4 py-3">Client</th>
-                                                    <th className="px-4 py-3">Status</th>
-                                                    <th className="px-4 py-3">Captured</th>
-                                                    <th className="px-4 py-3">Actions</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody className="divide-y divide-slate-100">
-                                                {loading ? (
-                                                    <tr><td colSpan="7" className="px-4 py-16 text-center font-bold text-slate-400">Loading dashboard...</td></tr>
-                                                ) : photos.length === 0 ? (
-                                                    <tr><td colSpan="7" className="px-4 py-16 text-center font-bold text-slate-400">No photos match the current filter.</td></tr>
-                                                ) : photos.map(photo => (
-                                                    <tr key={photo.id} onClick={() => setActivePhotoId(photo.id)} className={`cursor-pointer hover:bg-slate-50 ${activePhoto?.id === photo.id ? 'bg-red-50/50' : ''}`}>
-                                                        <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                                                            <input type="checkbox" checked={selectedIds.includes(photo.id)} onChange={() => toggleSelect(photo.id)} />
-                                                        </td>
-                                                        <td className="px-4 py-3">
-                                                            <img src={`${API_BASE}${photo.url}`} className="h-14 w-20 rounded object-cover" />
-                                                        </td>
-                                                        <td className="px-4 py-3">
-                                                            <div className="font-black">{photo.building_name}</div>
-                                                            <div className="text-xs font-mono text-slate-500">{photo.qr_code} · {photo.screen_id}</div>
-                                                        </td>
-                                                        <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                                                            <select className="w-40 rounded border border-slate-200 px-2 py-2 text-xs font-bold outline-none" value={photo.advertiser_id || ''} onChange={(e) => updatePhotoAdvertiser(photo.id, e.target.value)}>
-                                                                <option value="">Unassigned</option>
-                                                                {advertisers.map(ad => <option key={ad.id} value={ad.id}>{ad.name}</option>)}
-                                                            </select>
-                                                        </td>
-                                                        <td className="px-4 py-3">{statusChip(photo.status)}</td>
-                                                        <td className="px-4 py-3">
-                                                            <div className="text-xs font-bold">{formatDateTime(photo.timestamp)}</div>
-                                                            <div className="text-xs text-slate-500">{photo.operator_name}</div>
-                                                        </td>
-                                                        <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
-                                                            <div className="flex gap-2">
-                                                                <button onClick={() => updatePhotoStatus(photo.id, 'approved')} className="rounded bg-emerald-50 px-2 py-1 text-xs font-black text-emerald-700">OK</button>
-                                                                <button onClick={() => updatePhotoStatus(photo.id, 'flagged')} className="rounded bg-blue-50 px-2 py-1 text-xs font-black text-blue-700">Flag</button>
-                                                                <button onClick={() => updatePhotoStatus(photo.id, 'rejected')} className="rounded bg-red-50 px-2 py-1 text-xs font-black text-red-700">Reject</button>
-                                                            </div>
-                                                        </td>
-                                                    </tr>
-                                                ))}
-                                            </tbody>
-                                        </table>
-                                    </div>
-                                </div>
-
-                                <aside className="space-y-6">
-                                    <div className="rounded border border-slate-200 bg-white p-4">
-                                        <h3 className="text-lg font-black">Selected Proof</h3>
-                                        {activePhoto ? (
-                                            <div className="mt-4 space-y-4">
-                                                <img src={`${API_BASE}${activePhoto.url}`} className="h-64 w-full rounded bg-slate-100 object-cover" />
-                                                <div className="grid grid-cols-2 gap-3 text-sm">
-                                                    <Info label="Building" value={activePhoto.building_name} />
-                                                    <Info label="Screen" value={activePhoto.screen_id} />
-                                                    <Info label="Client" value={activePhoto.advertiser_name || 'Unassigned'} />
-                                                    <Info label="Operator" value={activePhoto.operator_name} />
-                                                    <Info label="GPS" value={`${Number(activePhoto.lat || 0).toFixed(4)}, ${Number(activePhoto.lng || 0).toFixed(4)}`} />
-                                                    <Info label="Status" value={STATUS_META[activePhoto.status || 'pending']?.label || activePhoto.status} />
-                                                </div>
-                                                <div className="flex gap-2">
-                                                    <button onClick={() => updatePhotoStatus(activePhoto.id, 'approved')} className="flex-1 rounded bg-emerald-600 py-3 text-sm font-black uppercase text-white">Approve</button>
-                                                    <button onClick={() => updatePhotoStatus(activePhoto.id, 'rejected')} className="flex-1 rounded bg-red-600 py-3 text-sm font-black uppercase text-white">Reject</button>
-                                                </div>
-                                            </div>
-                                        ) : (
-                                            <div className="mt-4 rounded border border-dashed border-slate-200 py-16 text-center text-sm font-bold text-slate-400">No active proof</div>
-                                        )}
-                                    </div>
-
-                                    <div className="rounded border border-slate-200 bg-white p-4">
-                                        <h3 className="text-lg font-black">Recent Exports</h3>
-                                        <div className="mt-3 space-y-3">
-                                            {exportsLog.length === 0 ? (
-                                                <div className="rounded bg-slate-50 p-4 text-sm font-bold text-slate-400">No export batches yet.</div>
-                                            ) : exportsLog.map(item => (
-                                                <div key={item.id} className="rounded border border-slate-100 p-3">
-                                                    <div className="flex justify-between text-sm font-black">
-                                                        <span>Batch #{item.id}</span>
-                                                        <span>{item.success_count}/{item.photo_count}</span>
-                                                    </div>
-                                                    <div className="mt-1 text-xs text-slate-500">{formatDateTime(item.created_at)}</div>
-                                                </div>
-                                            ))}
-                                        </div>
-                                    </div>
-                                </aside>
-                            </div>
+                            {notice && <Notice text={notice} onClose={() => setNotice('')} />}
+                            {view === 'overview' && <Overview stats={stats} completionRate={completionRate} campaigns={campaigns} exceptions={exceptions} exportsLog={exportsLog} />}
+                            {view === 'campaigns' && <Campaigns campaigns={campaigns} activeCampaignId={activeCampaignId} setActiveCampaignId={setActiveCampaignId} advertisers={advertisers} newCampaign={newCampaign} setNewCampaign={setNewCampaign} createCampaign={createCampaign} generateTasks={generateTasks} tasks={tasks} taskChip={taskChip} selectedTaskScreens={selectedTaskScreens} toggleTask={toggleTask} operators={operators} assignment={assignment} setAssignment={setAssignment} assignSelectedTasks={assignSelectedTasks} />}
+                            {view === 'review' && <Review loading={loading} stats={stats} photos={photos} activePhoto={activePhoto} setActivePhotoId={setActivePhotoId} advertisers={advertisers} filters={filters} setFilters={setFilters} selectedIds={selectedIds} setSelectedIds={setSelectedIds} togglePhoto={togglePhoto} updatePhotoAdvertiser={updatePhotoAdvertiser} updatePhotoStatus={updatePhotoStatus} bulkStatus={bulkStatus} exportSelected={exportSelected} statusChip={statusChip} formatDateTime={formatDateTime} completionRate={completionRate} />}
+                            {view === 'sites' && <Sites sites={sites} siteImportText={siteImportText} setSiteImportText={setSiteImportText} importSites={importSites} />}
+                            {view === 'exceptions' && <Exceptions exceptions={exceptions} updatePhotoStatus={updatePhotoStatus} statusChip={statusChip} formatDateTime={formatDateTime} />}
+                            {view === 'delivery' && <Delivery exportsLog={exportsLog} formatDateTime={formatDateTime} />}
                         </section>
                     </main>
                 </div>
             );
         };
 
+        const Notice = ({ text, onClose }) => (
+            <div className="mb-4 flex items-center justify-between rounded border border-red-100 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">
+                <span>{text}</span><button onClick={onClose} className="text-red-900">Close</button>
+            </div>
+        );
         const Metric = ({ label, value, tone = 'text-slate-900' }) => (
             <div className="rounded border border-slate-200 bg-white p-4">
                 <div className="text-xs font-black uppercase tracking-wide text-slate-400">{label}</div>
                 <div className={`mt-2 text-3xl font-black ${tone}`}>{value}</div>
             </div>
         );
-
         const Info = ({ label, value }) => (
             <div className="rounded bg-slate-50 p-3">
                 <div className="text-[10px] font-black uppercase text-slate-400">{label}</div>
                 <div className="mt-1 truncate text-sm font-bold">{value || '--'}</div>
             </div>
         );
+
+        const Overview = ({ stats, completionRate, campaigns, exceptions, exportsLog }) => (
+            <div className="space-y-6">
+                <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+                    <Metric label="Completion" value={`${completionRate}%`} tone="text-emerald-600" />
+                    <Metric label="Total Screens" value={stats.total_screens || 0} />
+                    <Metric label="Captured" value={stats.completed_photos || 0} tone="text-blue-600" />
+                    <Metric label="Pending Review" value={stats.pending_photos || 0} tone="text-amber-600" />
+                    <Metric label="Approved" value={stats.approved_photos || 0} tone="text-emerald-600" />
+                    <Metric label="Exceptions" value={(stats.rejected_photos || 0) + (stats.flagged_photos || 0)} tone="text-red-600" />
+                </div>
+                <div className="grid gap-6 xl:grid-cols-3">
+                    <Panel title="Campaign Summary"><List rows={campaigns.slice(0, 5)} empty="No campaigns yet." render={c => <div><div className="font-black">{c.name}</div><div className="text-xs text-slate-500">{c.total_tasks || 0} tasks · {c.approved_tasks || 0} approved</div></div>} /></Panel>
+                    <Panel title="Exception Queue"><List rows={exceptions.slice(0, 5)} empty="No exceptions." render={e => <div><div className="font-black">{e.building_name}</div><div className="text-xs text-slate-500">{e.status} · {e.advertiser_name || 'Unassigned client'}</div></div>} /></Panel>
+                    <Panel title="Recent Delivery"><List rows={exportsLog.slice(0, 5)} empty="No export batches." render={e => <div><div className="font-black">Batch #{e.id}</div><div className="text-xs text-slate-500">{e.success_count}/{e.photo_count} files</div></div>} /></Panel>
+                </div>
+            </div>
+        );
+
+        const Campaigns = ({ campaigns, activeCampaignId, setActiveCampaignId, advertisers, newCampaign, setNewCampaign, createCampaign, generateTasks, tasks, taskChip, selectedTaskScreens, toggleTask, operators, assignment, setAssignment, assignSelectedTasks }) => (
+            <div className="grid gap-6 xl:grid-cols-[380px_minmax(0,1fr)]">
+                <div className="space-y-6">
+                    <Panel title="Create Campaign">
+                        <div className="space-y-3">
+                            <input className="w-full rounded border border-slate-200 px-3 py-2 text-sm font-bold" placeholder="Campaign name" value={newCampaign.name} onChange={e => setNewCampaign({ ...newCampaign, name: e.target.value })} />
+                            <select className="w-full rounded border border-slate-200 px-3 py-2 text-sm font-bold" value={newCampaign.advertiser_id} onChange={e => setNewCampaign({ ...newCampaign, advertiser_id: e.target.value })}>
+                                <option value="">No client lock</option>{advertisers.map(ad => <option key={ad.id} value={ad.id}>{ad.name}</option>)}
+                            </select>
+                            <div className="grid grid-cols-2 gap-2">
+                                <input type="date" className="rounded border border-slate-200 px-3 py-2 text-sm font-bold" value={newCampaign.start_date} onChange={e => setNewCampaign({ ...newCampaign, start_date: e.target.value })} />
+                                <input type="date" className="rounded border border-slate-200 px-3 py-2 text-sm font-bold" value={newCampaign.end_date} onChange={e => setNewCampaign({ ...newCampaign, end_date: e.target.value })} />
+                            </div>
+                            <button onClick={createCampaign} className="w-full rounded bg-red-600 py-3 text-sm font-black uppercase text-white">Create Campaign</button>
+                        </div>
+                    </Panel>
+                    <Panel title="Campaigns">
+                        <div className="space-y-2">{campaigns.map(c => <button key={c.id} onClick={() => setActiveCampaignId(String(c.id))} className={`w-full rounded border p-3 text-left ${String(activeCampaignId) === String(c.id) ? 'border-red-500 bg-red-50' : 'border-slate-200 bg-white'}`}><div className="font-black">{c.name}</div><div className="text-xs text-slate-500">{c.start_date} to {c.end_date} · {c.total_tasks || 0} tasks</div></button>)}</div>
+                    </Panel>
+                </div>
+                <Panel title="Task Management">
+                    <div className="mb-4 flex flex-wrap items-center gap-2">
+                        <button onClick={generateTasks} className="rounded bg-slate-900 px-3 py-2 text-xs font-black uppercase text-white">Generate Tasks From Screens</button>
+                        <select className="rounded border border-slate-200 px-3 py-2 text-sm font-bold" value={assignment.operator_id} onChange={e => setAssignment({ ...assignment, operator_id: e.target.value })}>
+                            <option value="">Select operator</option>{operators.map(op => <option key={op.id} value={op.id}>{op.name} · {op.grid_zone}</option>)}
+                        </select>
+                        <input type="date" className="rounded border border-slate-200 px-3 py-2 text-sm font-bold" value={assignment.due_at} onChange={e => setAssignment({ ...assignment, due_at: e.target.value })} />
+                        <button onClick={assignSelectedTasks} disabled={!selectedTaskScreens.length || !assignment.operator_id} className="rounded bg-red-600 px-3 py-2 text-xs font-black uppercase text-white disabled:bg-slate-300">Assign Selected</button>
+                    </div>
+                    <Table empty="No task rows yet. Generate tasks from screens.">
+                        <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-4 py-3"></th><th className="px-4 py-3">Site</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Operator</th><th className="px-4 py-3">Latest Proof</th></tr></thead>
+                        <tbody className="divide-y divide-slate-100">{tasks.map(task => <tr key={task.id}><td className="px-4 py-3"><input type="checkbox" checked={selectedTaskScreens.includes(task.screen_id)} onChange={() => toggleTask(task.screen_id)} /></td><td className="px-4 py-3"><div className="font-black">{task.building_name}</div><div className="text-xs font-mono text-slate-500">{task.screen_id} · {task.qr_code}</div></td><td className="px-4 py-3">{taskChip(task.status)}</td><td className="px-4 py-3 text-sm font-bold">{task.operator_name || '--'}<div className="text-xs text-slate-500">{task.due_at || ''}</div></td><td className="px-4 py-3 text-xs text-slate-500">{task.latest_photo_timestamp || '--'}</td></tr>)}</tbody>
+                    </Table>
+                </Panel>
+            </div>
+        );
+
+        const Review = ({ loading, photos, activePhoto, setActivePhotoId, advertisers, filters, setFilters, selectedIds, setSelectedIds, togglePhoto, updatePhotoAdvertiser, updatePhotoStatus, bulkStatus, exportSelected, statusChip, formatDateTime }) => (
+            <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
+                <Panel title={`Review Queue · ${photos.length} photos · ${selectedIds.length} selected`}>
+                    <div className="mb-4 flex flex-wrap gap-2">
+                        <select className="rounded border border-slate-200 px-3 py-2 text-sm font-bold" value={filters.advertiser_id} onChange={e => setFilters({ ...filters, advertiser_id: e.target.value })}><option value="">All Clients</option>{advertisers.map(ad => <option key={ad.id} value={ad.id}>{ad.name}</option>)}</select>
+                        <select className="rounded border border-slate-200 px-3 py-2 text-sm font-bold" value={filters.status} onChange={e => setFilters({ ...filters, status: e.target.value })}>{Object.entries(STATUS_META).map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}</select>
+                        <button onClick={() => setFilters({ ...filters, cycleOnly: !filters.cycleOnly })} className={`rounded border px-3 py-2 text-sm font-black ${filters.cycleOnly ? 'border-red-600 bg-red-600 text-white' : 'border-slate-200 bg-white text-slate-500'}`}>Cycle</button>
+                        <button onClick={() => setSelectedIds(photos.map(photo => photo.id))} className="rounded border border-slate-200 px-3 py-2 text-xs font-black uppercase">Select Visible</button>
+                        <button onClick={() => setSelectedIds([])} className="rounded border border-slate-200 px-3 py-2 text-xs font-black uppercase">Clear</button>
+                        <button onClick={() => bulkStatus('approved')} disabled={!selectedIds.length} className="rounded bg-emerald-600 px-3 py-2 text-xs font-black uppercase text-white disabled:bg-slate-300">Approve</button>
+                        <button onClick={() => bulkStatus('flagged')} disabled={!selectedIds.length} className="rounded bg-blue-600 px-3 py-2 text-xs font-black uppercase text-white disabled:bg-slate-300">Flag</button>
+                        <button onClick={() => bulkStatus('rejected')} disabled={!selectedIds.length} className="rounded bg-red-600 px-3 py-2 text-xs font-black uppercase text-white disabled:bg-slate-300">Reject</button>
+                        <button onClick={exportSelected} disabled={!selectedIds.length} className="rounded bg-slate-900 px-3 py-2 text-xs font-black uppercase text-white disabled:bg-slate-300">Export Selected</button>
+                    </div>
+                    <Table empty={loading ? 'Loading dashboard...' : 'No photos match the current filter.'}>
+                        <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-4 py-3"></th><th className="px-4 py-3">Photo</th><th className="px-4 py-3">Site</th><th className="px-4 py-3">Client</th><th className="px-4 py-3">Status</th><th className="px-4 py-3">Captured</th><th className="px-4 py-3">Actions</th></tr></thead>
+                        <tbody className="divide-y divide-slate-100">{photos.map(photo => <tr key={photo.id} onClick={() => setActivePhotoId(photo.id)} className={`cursor-pointer hover:bg-slate-50 ${activePhoto?.id === photo.id ? 'bg-red-50/50' : ''}`}><td className="px-4 py-3" onClick={e => e.stopPropagation()}><input type="checkbox" checked={selectedIds.includes(photo.id)} onChange={() => togglePhoto(photo.id)} /></td><td className="px-4 py-3"><img src={`${API_BASE}${photo.url}`} className="h-14 w-20 rounded object-cover" /></td><td className="px-4 py-3"><div className="font-black">{photo.building_name}</div><div className="text-xs font-mono text-slate-500">{photo.qr_code} · {photo.screen_id}</div></td><td className="px-4 py-3" onClick={e => e.stopPropagation()}><select className="w-40 rounded border border-slate-200 px-2 py-2 text-xs font-bold" value={photo.advertiser_id || ''} onChange={e => updatePhotoAdvertiser(photo.id, e.target.value)}><option value="">Unassigned</option>{advertisers.map(ad => <option key={ad.id} value={ad.id}>{ad.name}</option>)}</select></td><td className="px-4 py-3">{statusChip(photo.status)}</td><td className="px-4 py-3"><div className="text-xs font-bold">{formatDateTime(photo.timestamp)}</div><div className="text-xs text-slate-500">{photo.operator_name}</div></td><td className="px-4 py-3" onClick={e => e.stopPropagation()}><div className="flex gap-2"><button onClick={() => updatePhotoStatus(photo.id, 'approved')} className="rounded bg-emerald-50 px-2 py-1 text-xs font-black text-emerald-700">OK</button><button onClick={() => updatePhotoStatus(photo.id, 'flagged')} className="rounded bg-blue-50 px-2 py-1 text-xs font-black text-blue-700">Flag</button><button onClick={() => updatePhotoStatus(photo.id, 'rejected')} className="rounded bg-red-50 px-2 py-1 text-xs font-black text-red-700">Reject</button></div></td></tr>)}</tbody>
+                    </Table>
+                </Panel>
+                <Panel title="Selected Proof">{activePhoto ? <div className="space-y-4"><img src={`${API_BASE}${activePhoto.url}`} className="h-64 w-full rounded bg-slate-100 object-cover" /><div className="grid grid-cols-2 gap-3 text-sm"><Info label="Building" value={activePhoto.building_name} /><Info label="Screen" value={activePhoto.screen_id} /><Info label="Client" value={activePhoto.advertiser_name || 'Unassigned'} /><Info label="Operator" value={activePhoto.operator_name} /><Info label="GPS" value={`${Number(activePhoto.lat || 0).toFixed(4)}, ${Number(activePhoto.lng || 0).toFixed(4)}`} /><Info label="Status" value={activePhoto.status} /></div><div className="flex gap-2"><button onClick={() => updatePhotoStatus(activePhoto.id, 'approved')} className="flex-1 rounded bg-emerald-600 py-3 text-sm font-black uppercase text-white">Approve</button><button onClick={() => updatePhotoStatus(activePhoto.id, 'rejected')} className="flex-1 rounded bg-red-600 py-3 text-sm font-black uppercase text-white">Reject</button></div></div> : <Empty text="No active proof" />}</Panel>
+            </div>
+        );
+
+        const Sites = ({ sites, siteImportText, setSiteImportText, importSites }) => (
+            <div className="grid gap-6 xl:grid-cols-[420px_minmax(0,1fr)]">
+                <Panel title="JSON Site Import"><textarea className="h-64 w-full rounded border border-slate-200 p-3 font-mono text-xs" value={siteImportText} onChange={e => setSiteImportText(e.target.value)} /><button onClick={importSites} className="mt-3 w-full rounded bg-red-600 py-3 text-sm font-black uppercase text-white">Import Sites</button></Panel>
+                <Panel title={`Sites & Screens · ${sites.length}`}><Table empty="No sites available."><thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-4 py-3">Building</th><th className="px-4 py-3">Screen</th><th className="px-4 py-3">QR</th><th className="px-4 py-3">Location</th></tr></thead><tbody className="divide-y divide-slate-100">{sites.map(site => <tr key={site.id}><td className="px-4 py-3 font-black">{site.building_name}</td><td className="px-4 py-3 font-mono text-xs">{site.id}</td><td className="px-4 py-3 font-mono text-xs">{site.qr_code}</td><td className="px-4 py-3 text-xs text-slate-500">{Number(site.lat || 0).toFixed(4)}, {Number(site.lng || 0).toFixed(4)}</td></tr>)}</tbody></Table></Panel>
+            </div>
+        );
+
+        const Exceptions = ({ exceptions, updatePhotoStatus, statusChip, formatDateTime }) => (
+            <Panel title={`Exception Queue · ${exceptions.length}`}><Table empty="No exceptions."><thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-4 py-3">Proof</th><th className="px-4 py-3">Issue</th><th className="px-4 py-3">Site</th><th className="px-4 py-3">Captured</th><th className="px-4 py-3">Action</th></tr></thead><tbody className="divide-y divide-slate-100">{exceptions.map(item => <tr key={item.id}><td className="px-4 py-3"><img src={`${API_BASE}${item.url}`} className="h-14 w-20 rounded object-cover" /></td><td className="px-4 py-3">{statusChip(item.status)}<div className="mt-1 text-xs text-slate-500">{item.advertiser_name ? 'Review status issue' : 'Client unassigned'}</div></td><td className="px-4 py-3"><div className="font-black">{item.building_name}</div><div className="text-xs font-mono text-slate-500">{item.qr_code}</div></td><td className="px-4 py-3 text-xs">{formatDateTime(item.timestamp)}</td><td className="px-4 py-3"><button onClick={() => updatePhotoStatus(item.id, 'approved')} className="rounded bg-emerald-600 px-3 py-2 text-xs font-black uppercase text-white">Resolve</button></td></tr>)}</tbody></Table></Panel>
+        );
+
+        const Delivery = ({ exportsLog, formatDateTime }) => (
+            <Panel title="Delivery & Export Batches"><Table empty="No export batches yet."><thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-4 py-3">Batch</th><th className="px-4 py-3">Files</th><th className="px-4 py-3">Created</th><th className="px-4 py-3">Manifest</th><th className="px-4 py-3">Note</th></tr></thead><tbody className="divide-y divide-slate-100">{exportsLog.map(item => <tr key={item.id}><td className="px-4 py-3 font-black">#{item.id}</td><td className="px-4 py-3">{item.success_count}/{item.photo_count}</td><td className="px-4 py-3 text-xs">{formatDateTime(item.created_at)}</td><td className="px-4 py-3">{item.manifest_path ? <a className="font-black text-red-600" href={`${API_BASE}${item.manifest_path}`} target="_blank">Open CSV</a> : '--'}</td><td className="px-4 py-3 text-xs text-slate-500">{item.note}</td></tr>)}</tbody></Table></Panel>
+        );
+
+        const Panel = ({ title, children }) => <div className="rounded border border-slate-200 bg-white p-4"><h3 className="mb-4 text-lg font-black">{title}</h3>{children}</div>;
+        const Empty = ({ text }) => <div className="rounded border border-dashed border-slate-200 py-16 text-center text-sm font-bold text-slate-400">{text}</div>;
+        const Table = ({ children, empty }) => {
+            const body = React.Children.toArray(children).find(child => child.type === 'tbody');
+            const emptyRows = body && React.Children.count(body.props.children) === 0;
+            return <div className="overflow-x-auto">{emptyRows ? <Empty text={empty} /> : <table className="w-full min-w-[860px] text-left text-sm">{children}</table>}</div>;
+        };
+        const List = ({ rows, empty, render }) => rows.length === 0 ? <Empty text={empty} /> : <div className="space-y-2">{rows.map((row, idx) => <div key={row.id || idx} className="rounded border border-slate-100 p-3">{render(row)}</div>)}</div>;
 
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<App />);
