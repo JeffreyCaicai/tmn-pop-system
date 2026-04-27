@@ -3,139 +3,372 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TMN CommandCenter</title>
+    <title>TMN Command Center</title>
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
-<body class="bg-gray-100 font-sans">
+<body class="bg-slate-100 font-sans text-slate-900">
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect } = React;
+        const { useEffect, useMemo, useState } = React;
+        const API_BASE = window.location.origin;
+        const STATUS_META = {
+            all: { label: 'All Status', chip: 'bg-slate-100 text-slate-600 border-slate-200' },
+            pending: { label: 'Pending', chip: 'bg-amber-50 text-amber-700 border-amber-200' },
+            approved: { label: 'Approved', chip: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+            rejected: { label: 'Rejected', chip: 'bg-red-50 text-red-700 border-red-200' },
+            flagged: { label: 'Flagged', chip: 'bg-blue-50 text-blue-700 border-blue-200' },
+            exported: { label: 'Exported', chip: 'bg-slate-900 text-white border-slate-900' }
+        };
 
         const App = () => {
-            const [stats, setStats] = useState({ total_screens: 0, completed_photos: 0 });
+            const [stats, setStats] = useState({});
             const [photos, setPhotos] = useState([]);
+            const [advertisers, setAdvertisers] = useState([]);
+            const [exportsLog, setExportsLog] = useState([]);
+            const [cycle, setCycle] = useState({ name: 'Weekly PoP Cycle', start: '', end: '' });
+            const [filters, setFilters] = useState({ advertiser_id: '', status: 'all', cycleOnly: true });
+            const [selectedIds, setSelectedIds] = useState([]);
+            const [activePhotoId, setActivePhotoId] = useState(null);
+            const [notice, setNotice] = useState('');
             const [loading, setLoading] = useState(true);
 
             useEffect(() => {
-                fetchData();
-                const interval = setInterval(fetchData, 5000); // Poll every 5s
-                return () => clearInterval(interval);
+                bootstrap();
             }, []);
 
-            const fetchData = async () => {
-                try {
-                    const statsRes = await fetch('http://localhost:3001/api/dashboard/stats');
-                    const statsData = await statsRes.json();
-                    setStats(statsData);
+            useEffect(() => {
+                refreshOperationalData();
+                const timer = setInterval(refreshOperationalData, 8000);
+                return () => clearInterval(timer);
+            }, [filters.advertiser_id, filters.status, filters.cycleOnly, cycle.start, cycle.end]);
 
-                    const photosRes = await fetch('http://localhost:3001/api/dashboard/photos');
-                    const photosData = await photosRes.json();
-                    setPhotos(photosData);
-                    setLoading(false);
+            const queryString = () => {
+                const params = new URLSearchParams();
+                if (filters.advertiser_id) params.set('advertiser_id', filters.advertiser_id);
+                if (filters.status !== 'all') params.set('status', filters.status);
+                if (filters.cycleOnly && cycle.start && cycle.end) {
+                    params.set('cycle_start', cycle.start);
+                    params.set('cycle_end', cycle.end);
+                }
+                return params.toString();
+            };
+
+            const bootstrap = async () => {
+                setLoading(true);
+                try {
+                    const [cycleRes, advertiserRes] = await Promise.all([
+                        fetch(`${API_BASE}/api/settings/cycle`),
+                        fetch(`${API_BASE}/api/advertisers`)
+                    ]);
+                    setCycle(await cycleRes.json());
+                    setAdvertisers(await advertiserRes.json());
+                    await refreshOperationalData();
                 } catch (err) {
-                    console.error("Fetch error:", err);
+                    setNotice('Unable to load dashboard data.');
+                } finally {
+                    setLoading(false);
                 }
             };
 
-            const completionRate = stats.total_screens > 0 ? (stats.completed_photos / stats.total_screens * 100).toFixed(1) : 0;
+            const refreshOperationalData = async () => {
+                try {
+                    const qs = queryString();
+                    const [statsRes, photosRes, exportsRes] = await Promise.all([
+                        fetch(`${API_BASE}/api/dashboard/stats${qs ? `?${qs}` : ''}`),
+                        fetch(`${API_BASE}/api/dashboard/photos${qs ? `?${qs}` : ''}`),
+                        fetch(`${API_BASE}/api/dashboard/exports`)
+                    ]);
+                    const nextStats = await statsRes.json();
+                    const nextPhotos = await photosRes.json();
+                    const photoRows = Array.isArray(nextPhotos) ? nextPhotos : [];
+                    setStats(nextStats);
+                    setPhotos(photoRows);
+                    setExportsLog(await exportsRes.json());
+                    setSelectedIds(prev => prev.filter(id => photoRows.some(photo => photo.id === id)));
+                    setActivePhotoId(current => current || (photoRows[0] ? photoRows[0].id : null));
+                } catch (err) {
+                    console.error(err);
+                }
+            };
+
+            const activePhoto = useMemo(() => {
+                return photos.find(photo => photo.id === activePhotoId) || photos[0] || null;
+            }, [photos, activePhotoId]);
+
+            const completionRate = stats.total_screens > 0
+                ? Math.min(100, (stats.completed_photos / stats.total_screens) * 100).toFixed(1)
+                : '0.0';
+
+            const formatDateTime = (value) => {
+                if (!value) return '--';
+                const date = new Date(value);
+                return Number.isNaN(date.getTime()) ? '--' : date.toLocaleString();
+            };
+
+            const statusChip = (status) => {
+                const meta = STATUS_META[status || 'pending'] || STATUS_META.pending;
+                return <span className={`inline-flex items-center rounded border px-2 py-1 text-[11px] font-black uppercase ${meta.chip}`}>{meta.label}</span>;
+            };
+
+            const toggleSelect = (id) => {
+                setSelectedIds(prev => prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]);
+            };
+
+            const selectVisible = () => setSelectedIds(photos.map(photo => photo.id));
+            const clearSelection = () => setSelectedIds([]);
+
+            const updatePhotoAdvertiser = async (photoId, advertiserId) => {
+                await fetch(`${API_BASE}/api/photos/update-advertiser`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ photo_id: photoId, advertiser_id: advertiserId })
+                });
+                setNotice('Client assignment updated.');
+                refreshOperationalData();
+            };
+
+            const updatePhotoStatus = async (photoId, status, note = '') => {
+                await fetch(`${API_BASE}/api/photos/update-status`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ photo_id: photoId, status, review_note: note })
+                });
+                setNotice(`Photo marked as ${status}.`);
+                refreshOperationalData();
+            };
+
+            const bulkStatus = async (status) => {
+                if (selectedIds.length === 0) return;
+                await Promise.all(selectedIds.map(id => updatePhotoStatus(id, status)));
+                setNotice(`${selectedIds.length} photos marked as ${status}.`);
+                clearSelection();
+                refreshOperationalData();
+            };
+
+            const exportSelected = async () => {
+                if (selectedIds.length === 0) return;
+                const res = await fetch(`${API_BASE}/api/photos/export`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ photo_ids: selectedIds })
+                });
+                const data = await res.json();
+                setNotice(data.message || 'Export finished.');
+                clearSelection();
+                refreshOperationalData();
+            };
+
+            const saveCycle = async () => {
+                const res = await fetch(`${API_BASE}/api/settings/cycle`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(cycle)
+                });
+                if (res.ok) {
+                    setNotice('Cycle settings saved.');
+                    refreshOperationalData();
+                } else {
+                    setNotice('Cycle settings were not saved.');
+                }
+            };
 
             return (
-                <div className="min-h-screen flex flex-col">
-                    <header className="bg-slate-900 text-white p-6 shadow-xl flex justify-between items-center">
-                        <div>
-                            <h1 className="text-2xl font-black tracking-tight text-red-500">TMN COMMAND CENTER</h1>
-                            <p className="text-slate-400 text-sm">Real-time PoP Verification Pipeline</p>
+                <div className="min-h-screen bg-slate-100">
+                    <aside className="fixed inset-y-0 left-0 hidden w-64 border-r border-slate-800 bg-slate-950 text-white lg:block">
+                        <div className="p-6">
+                            <div className="text-xs font-black uppercase tracking-[0.3em] text-red-500">TMN POP</div>
+                            <h1 className="mt-3 text-2xl font-black tracking-tight">Command Center</h1>
+                            <p className="mt-2 text-sm text-slate-400">PoP operations, review, and delivery</p>
                         </div>
-                        <div className="flex space-x-8">
-                            <div className="text-right">
-                                <p className="text-xs text-slate-500 uppercase font-bold">Weekend Progress</p>
-                                <p className="text-2xl font-mono text-green-400">{completionRate}%</p>
-                            </div>
-                            <div className="text-right border-l border-slate-700 pl-8">
-                                <p className="text-xs text-slate-500 uppercase font-bold">Active Operators</p>
-                                <p className="text-2xl font-mono text-blue-400">45</p>
-                            </div>
-                        </div>
-                    </header>
+                        <nav className="space-y-1 px-3 text-sm font-bold">
+                            {['Overview', 'Proof Review', 'Delivery', 'Settings'].map((item, idx) => (
+                                <div key={item} className={`rounded px-4 py-3 ${idx === 1 ? 'bg-red-600 text-white' : 'text-slate-400'}`}>{item}</div>
+                            ))}
+                        </nav>
+                    </aside>
 
-                    <main className="flex-1 p-8 overflow-y-auto">
-                        {/* Summary Cards */}
-                        <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-10">
-                            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-                                <p className="text-slate-400 text-xs font-bold uppercase mb-1">Total Screens</p>
-                                <p className="text-3xl font-black text-slate-800">{stats.total_screens}</p>
-                            </div>
-                            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-                                <p className="text-slate-400 text-xs font-bold uppercase mb-1">PoP Captured</p>
-                                <p className="text-3xl font-black text-green-600">{stats.completed_photos}</p>
-                            </div>
-                            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-                                <p className="text-slate-400 text-xs font-bold uppercase mb-1">Remaining</p>
-                                <p className="text-3xl font-black text-orange-500">{stats.total_screens - stats.completed_photos}</p>
-                            </div>
-                            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 bg-red-50 border-red-100">
-                                <p className="text-red-400 text-xs font-bold uppercase mb-1">Flagged Errors</p>
-                                <p className="text-3xl font-black text-red-600">0</p>
-                            </div>
-                        </div>
-
-                        {/* Photo Feed */}
-                        <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center">
-                            <span className="w-3 h-3 bg-green-500 rounded-full mr-2 animate-pulse"></span>
-                            Live Monitoring Feed
-                        </h2>
-
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-                            {photos.length === 0 ? (
-                                <div className="col-span-full py-20 text-center text-slate-400">
-                                    No PoP photos captured yet. Waiting for operator uploads...
+                    <main className="lg:pl-64">
+                        <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/95 px-5 py-4 backdrop-blur lg:px-8">
+                            <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+                                <div>
+                                    <h2 className="text-2xl font-black tracking-tight">Proof Review MVP</h2>
+                                    <p className="text-sm text-slate-500">{cycle.name} · {cycle.start || '--'} to {cycle.end || '--'}</p>
                                 </div>
-                            ) : (
-                                photos.map(photo => (
-                                    <div key={photo.id} className="bg-white rounded-2xl overflow-hidden shadow-sm border border-slate-100 hover:shadow-lg transition-shadow group">
-                                        <div className="relative aspect-video bg-slate-200">
-                                            <img 
-                                                src={`http://localhost:3001${photo.url}`} 
-                                                className="w-full h-full object-cover"
-                                            />
-                                            <div className="absolute top-2 right-2 flex space-x-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                <button className="bg-white/90 p-1 rounded-md text-green-600 shadow-sm"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M5 13l4 4L19 7"></path></svg></button>
-                                                <button className="bg-white/90 p-1 rounded-md text-red-600 shadow-sm"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
+                                <div className="grid grid-cols-1 gap-2 sm:grid-cols-4 xl:w-[720px]">
+                                    <input className="rounded border border-slate-200 px-3 py-2 text-sm font-bold outline-none focus:border-red-500" value={cycle.name || ''} onChange={(e) => setCycle({ ...cycle, name: e.target.value })} />
+                                    <input type="date" className="rounded border border-slate-200 px-3 py-2 text-sm font-bold outline-none focus:border-red-500" value={cycle.start || ''} onChange={(e) => setCycle({ ...cycle, start: e.target.value })} />
+                                    <input type="date" className="rounded border border-slate-200 px-3 py-2 text-sm font-bold outline-none focus:border-red-500" value={cycle.end || ''} onChange={(e) => setCycle({ ...cycle, end: e.target.value })} />
+                                    <button onClick={saveCycle} className="rounded bg-slate-900 px-4 py-2 text-sm font-black uppercase text-white">Save Cycle</button>
+                                </div>
+                            </div>
+                        </header>
+
+                        <section className="px-5 py-6 lg:px-8">
+                            {notice && (
+                                <div className="mb-4 flex items-center justify-between rounded border border-red-100 bg-red-50 px-4 py-3 text-sm font-bold text-red-700">
+                                    <span>{notice}</span>
+                                    <button onClick={() => setNotice('')} className="text-red-900">Close</button>
+                                </div>
+                            )}
+
+                            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-6">
+                                <Metric label="Completion" value={`${completionRate}%`} tone="text-emerald-600" />
+                                <Metric label="Total Screens" value={stats.total_screens || 0} />
+                                <Metric label="Captured" value={stats.completed_photos || 0} tone="text-blue-600" />
+                                <Metric label="Pending" value={stats.pending_photos || 0} tone="text-amber-600" />
+                                <Metric label="Approved" value={stats.approved_photos || 0} tone="text-emerald-600" />
+                                <Metric label="Exceptions" value={(stats.rejected_photos || 0) + (stats.flagged_photos || 0)} tone="text-red-600" />
+                            </div>
+
+                            <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
+                                <div className="rounded border border-slate-200 bg-white">
+                                    <div className="border-b border-slate-200 p-4">
+                                        <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+                                            <div>
+                                                <h3 className="text-lg font-black">Review Queue</h3>
+                                                <p className="text-sm text-slate-500">{photos.length} photos in current filter · {selectedIds.length} selected</p>
                                             </div>
-                                            <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-3">
-                                                <p className="text-white text-[10px] font-mono leading-tight">
-                                                    GPS: {photo.lat.toFixed(4)}, {photo.lng.toFixed(4)}<br/>
-                                                    TS: {new Date(photo.timestamp).toLocaleString()}
-                                                </p>
+                                            <div className="flex flex-wrap gap-2">
+                                                <select className="rounded border border-slate-200 px-3 py-2 text-sm font-bold outline-none" value={filters.advertiser_id} onChange={(e) => setFilters({ ...filters, advertiser_id: e.target.value })}>
+                                                    <option value="">All Clients</option>
+                                                    {advertisers.map(ad => <option key={ad.id} value={ad.id}>{ad.name}</option>)}
+                                                </select>
+                                                <select className="rounded border border-slate-200 px-3 py-2 text-sm font-bold outline-none" value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })}>
+                                                    {Object.entries(STATUS_META).map(([key, meta]) => <option key={key} value={key}>{meta.label}</option>)}
+                                                </select>
+                                                <button onClick={() => setFilters({ ...filters, cycleOnly: !filters.cycleOnly })} className={`rounded border px-3 py-2 text-sm font-black ${filters.cycleOnly ? 'border-red-600 bg-red-600 text-white' : 'border-slate-200 bg-white text-slate-500'}`}>Cycle</button>
                                             </div>
                                         </div>
-                                        <div className="p-4">
-                                            <div className="flex justify-between items-start mb-2">
-                                                <h3 className="font-bold text-slate-800 leading-tight">{photo.building_name}</h3>
-                                                <span className="bg-slate-100 text-slate-600 text-[10px] px-2 py-0.5 rounded font-mono font-bold uppercase tracking-widest">{photo.qr_code}</span>
-                                            </div>
-                                            <div className="flex items-center text-xs text-slate-500">
-                                                <div className="w-5 h-5 bg-slate-200 rounded-full flex items-center justify-center mr-2 text-[10px] font-bold">B</div>
-                                                <span>Operator: <strong>{photo.operator_name}</strong></span>
-                                            </div>
+                                        <div className="mt-4 flex flex-wrap gap-2">
+                                            <button onClick={selectVisible} className="rounded border border-slate-200 px-3 py-2 text-xs font-black uppercase text-slate-700">Select Visible</button>
+                                            <button onClick={clearSelection} className="rounded border border-slate-200 px-3 py-2 text-xs font-black uppercase text-slate-700">Clear</button>
+                                            <button onClick={() => bulkStatus('approved')} disabled={!selectedIds.length} className="rounded bg-emerald-600 px-3 py-2 text-xs font-black uppercase text-white disabled:bg-slate-300">Approve</button>
+                                            <button onClick={() => bulkStatus('flagged')} disabled={!selectedIds.length} className="rounded bg-blue-600 px-3 py-2 text-xs font-black uppercase text-white disabled:bg-slate-300">Flag</button>
+                                            <button onClick={() => bulkStatus('rejected')} disabled={!selectedIds.length} className="rounded bg-red-600 px-3 py-2 text-xs font-black uppercase text-white disabled:bg-slate-300">Reject</button>
+                                            <button onClick={exportSelected} disabled={!selectedIds.length} className="rounded bg-slate-900 px-3 py-2 text-xs font-black uppercase text-white disabled:bg-slate-300">Export Selected</button>
                                         </div>
                                     </div>
-                                ))
-                            )}
-                        </div>
-                    </main>
 
-                    <footer className="bg-white border-t p-4 text-center text-slate-400 text-xs">
-                        &copy; 2026 TMN Focus Media Indonesia - Automation Platform V1.0-PROTOTYPE
-                    </footer>
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full min-w-[980px] text-left text-sm">
+                                            <thead className="bg-slate-50 text-xs uppercase text-slate-500">
+                                                <tr>
+                                                    <th className="w-12 px-4 py-3"></th>
+                                                    <th className="px-4 py-3">Photo</th>
+                                                    <th className="px-4 py-3">Site</th>
+                                                    <th className="px-4 py-3">Client</th>
+                                                    <th className="px-4 py-3">Status</th>
+                                                    <th className="px-4 py-3">Captured</th>
+                                                    <th className="px-4 py-3">Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-slate-100">
+                                                {loading ? (
+                                                    <tr><td colSpan="7" className="px-4 py-16 text-center font-bold text-slate-400">Loading dashboard...</td></tr>
+                                                ) : photos.length === 0 ? (
+                                                    <tr><td colSpan="7" className="px-4 py-16 text-center font-bold text-slate-400">No photos match the current filter.</td></tr>
+                                                ) : photos.map(photo => (
+                                                    <tr key={photo.id} onClick={() => setActivePhotoId(photo.id)} className={`cursor-pointer hover:bg-slate-50 ${activePhoto?.id === photo.id ? 'bg-red-50/50' : ''}`}>
+                                                        <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                                                            <input type="checkbox" checked={selectedIds.includes(photo.id)} onChange={() => toggleSelect(photo.id)} />
+                                                        </td>
+                                                        <td className="px-4 py-3">
+                                                            <img src={`${API_BASE}${photo.url}`} className="h-14 w-20 rounded object-cover" />
+                                                        </td>
+                                                        <td className="px-4 py-3">
+                                                            <div className="font-black">{photo.building_name}</div>
+                                                            <div className="text-xs font-mono text-slate-500">{photo.qr_code} · {photo.screen_id}</div>
+                                                        </td>
+                                                        <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                                                            <select className="w-40 rounded border border-slate-200 px-2 py-2 text-xs font-bold outline-none" value={photo.advertiser_id || ''} onChange={(e) => updatePhotoAdvertiser(photo.id, e.target.value)}>
+                                                                <option value="">Unassigned</option>
+                                                                {advertisers.map(ad => <option key={ad.id} value={ad.id}>{ad.name}</option>)}
+                                                            </select>
+                                                        </td>
+                                                        <td className="px-4 py-3">{statusChip(photo.status)}</td>
+                                                        <td className="px-4 py-3">
+                                                            <div className="text-xs font-bold">{formatDateTime(photo.timestamp)}</div>
+                                                            <div className="text-xs text-slate-500">{photo.operator_name}</div>
+                                                        </td>
+                                                        <td className="px-4 py-3" onClick={(e) => e.stopPropagation()}>
+                                                            <div className="flex gap-2">
+                                                                <button onClick={() => updatePhotoStatus(photo.id, 'approved')} className="rounded bg-emerald-50 px-2 py-1 text-xs font-black text-emerald-700">OK</button>
+                                                                <button onClick={() => updatePhotoStatus(photo.id, 'flagged')} className="rounded bg-blue-50 px-2 py-1 text-xs font-black text-blue-700">Flag</button>
+                                                                <button onClick={() => updatePhotoStatus(photo.id, 'rejected')} className="rounded bg-red-50 px-2 py-1 text-xs font-black text-red-700">Reject</button>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+
+                                <aside className="space-y-6">
+                                    <div className="rounded border border-slate-200 bg-white p-4">
+                                        <h3 className="text-lg font-black">Selected Proof</h3>
+                                        {activePhoto ? (
+                                            <div className="mt-4 space-y-4">
+                                                <img src={`${API_BASE}${activePhoto.url}`} className="h-64 w-full rounded bg-slate-100 object-cover" />
+                                                <div className="grid grid-cols-2 gap-3 text-sm">
+                                                    <Info label="Building" value={activePhoto.building_name} />
+                                                    <Info label="Screen" value={activePhoto.screen_id} />
+                                                    <Info label="Client" value={activePhoto.advertiser_name || 'Unassigned'} />
+                                                    <Info label="Operator" value={activePhoto.operator_name} />
+                                                    <Info label="GPS" value={`${Number(activePhoto.lat || 0).toFixed(4)}, ${Number(activePhoto.lng || 0).toFixed(4)}`} />
+                                                    <Info label="Status" value={STATUS_META[activePhoto.status || 'pending']?.label || activePhoto.status} />
+                                                </div>
+                                                <div className="flex gap-2">
+                                                    <button onClick={() => updatePhotoStatus(activePhoto.id, 'approved')} className="flex-1 rounded bg-emerald-600 py-3 text-sm font-black uppercase text-white">Approve</button>
+                                                    <button onClick={() => updatePhotoStatus(activePhoto.id, 'rejected')} className="flex-1 rounded bg-red-600 py-3 text-sm font-black uppercase text-white">Reject</button>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div className="mt-4 rounded border border-dashed border-slate-200 py-16 text-center text-sm font-bold text-slate-400">No active proof</div>
+                                        )}
+                                    </div>
+
+                                    <div className="rounded border border-slate-200 bg-white p-4">
+                                        <h3 className="text-lg font-black">Recent Exports</h3>
+                                        <div className="mt-3 space-y-3">
+                                            {exportsLog.length === 0 ? (
+                                                <div className="rounded bg-slate-50 p-4 text-sm font-bold text-slate-400">No export batches yet.</div>
+                                            ) : exportsLog.map(item => (
+                                                <div key={item.id} className="rounded border border-slate-100 p-3">
+                                                    <div className="flex justify-between text-sm font-black">
+                                                        <span>Batch #{item.id}</span>
+                                                        <span>{item.success_count}/{item.photo_count}</span>
+                                                    </div>
+                                                    <div className="mt-1 text-xs text-slate-500">{formatDateTime(item.created_at)}</div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </aside>
+                            </div>
+                        </section>
+                    </main>
                 </div>
             );
         };
+
+        const Metric = ({ label, value, tone = 'text-slate-900' }) => (
+            <div className="rounded border border-slate-200 bg-white p-4">
+                <div className="text-xs font-black uppercase tracking-wide text-slate-400">{label}</div>
+                <div className={`mt-2 text-3xl font-black ${tone}`}>{value}</div>
+            </div>
+        );
+
+        const Info = ({ label, value }) => (
+            <div className="rounded bg-slate-50 p-3">
+                <div className="text-[10px] font-black uppercase text-slate-400">{label}</div>
+                <div className="mt-1 truncate text-sm font-bold">{value || '--'}</div>
+            </div>
+        );
 
         const root = ReactDOM.createRoot(document.getElementById('root'));
         root.render(<App />);
