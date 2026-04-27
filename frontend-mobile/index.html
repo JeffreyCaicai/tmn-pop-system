@@ -43,7 +43,7 @@
             
             const [selectedIds, setSelectedIds] = useState([]);
             const [advFilter, setAdvFilter] = useState("");
-            const [cycleFilter, setCycleFilter] = useState(true);
+            const [cycleFilter, setCycleFilter] = useState(false);
 
             const scannerRef = useRef(null);
             const streamRef = useRef(null);
@@ -208,6 +208,7 @@
                     formData.append('lng', location.lng);
                     formData.append('timestamp', new Date().toISOString());
                     await fetch(`${window.location.origin}/api/upload`, { method: 'POST', body: formData });
+                    await fetchHistory();
                     setView('success');
                 } catch (err) { alert("Upload failed"); }
                 setLoading(false);
@@ -298,7 +299,7 @@
                                                 <option value="">ALL CLIENTS</option>
                                                 {advertisers.map(a => <option key={a.id} value={a.id}>{a.name.toUpperCase()}</option>)}
                                             </select>
-                                            <button onClick={() => setCycleFilter(!cycleFilter)} className={`px-4 py-2 text-[10px] font-black rounded-lg border transition-all ${cycleFilter ? 'bg-red-600 border-red-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-400'}`}>WEEKLY</button>
+                                            <button onClick={() => setCycleFilter(!cycleFilter)} className={`px-4 py-2 text-[10px] font-black rounded-lg border transition-all ${cycleFilter ? 'bg-red-600 border-red-600 text-white' : 'bg-slate-50 border-slate-200 text-slate-400'}`}>{cycleFilter ? 'WEEKLY' : 'ALL'}</button>
                                         </div>
                                         {cycleFilter && <p className="text-[8px] font-black text-red-500 uppercase tracking-[0.2em] text-center">Cycle: {String(cycle.start).replace(/-/g, '/')} - {String(cycle.end).replace(/-/g, '/')}</p>}
                                     </div>
